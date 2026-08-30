@@ -236,6 +236,7 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 
 	deadline := began.Add(time.Duration(cfg.Session.MaxMinutes) * time.Minute)
 	seenRun := map[string]bool{}
+	pending := map[string]int{} // posts owed a screenshot once they scroll into view
 	idle := 0
 
 	for {
@@ -253,7 +254,7 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 			break
 		}
 
-		found, err := s.harvest(res, seenRun, want)
+		found, err := s.harvest(res, seenRun, want, pending)
 		if err != nil {
 			return res, err
 		}
@@ -281,8 +282,9 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 	return res, nil
 }
 
-// harvest reads the mounted posts once and appends the new ones.
-func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (int, error) {
+// harvest reads the mounted posts once and appends the new ones. pending carries
+// post ids still owed a screenshot, mapped to their index in res.Posts.
+func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot, pending map[string]int) (int, error) {
 	// map[string]any, not map[string]string: playwright-go's argument serializer
 	// only handles the former and panics outright on the latter.
 	arg := map[string]any{
@@ -311,7 +313,24 @@ func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (
 		for _, f := range r.Miss {
 			res.Health.Note(f, false)
 		}
-		if r.ID == "" || seenRun[r.ID] {
+		if r.ID == "" {
+			continue
+		}
+
+		// A post noted earlier has now scrolled into view: take the shot we could
+		// not take when it mounted. One attempt either way — a row that keeps
+		// failing must not be retried on every pass at 8s a go.
+		if idx, ok := pending[r.ID]; ok && r.Visible {
+			delete(pending, r.ID)
+			if path, err := s.shoot(r.ID); err != nil {
+				s.log.Warn("screenshot failed, keeping text only", "post", r.ID, "err", err)
+			} else {
+				res.Posts[idx].HasVisual, res.Posts[idx].ImagePath = true, path
+				res.Shots++
+			}
+		}
+
+		if seenRun[r.ID] {
 			continue
 		}
 		seenRun[r.ID] = true
@@ -324,19 +343,25 @@ func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (
 			ListURL:    res.ListURL, ScrapedAt: time.Now().UTC(),
 		}
 
-		if want != nil && r.Visible && want(p) {
-			path, err := s.shoot(p.ID)
-			switch {
-			case err != nil:
-				s.log.Warn("screenshot failed, keeping text only", "post", p.ID, "err", err)
-			default:
-				p.HasVisual, p.ImagePath = true, path
-				res.Shots++
+		res.Posts = append(res.Posts, p)
+		idx := len(res.Posts) - 1
+		added++
+
+		if want != nil && want(p) {
+			if r.Visible {
+				if path, err := s.shoot(p.ID); err != nil {
+					s.log.Warn("screenshot failed, keeping text only", "post", p.ID, "err", err)
+				} else {
+					res.Posts[idx].HasVisual, res.Posts[idx].ImagePath = true, path
+					res.Shots++
+				}
+			} else {
+				// The timeline is virtualized, so rows almost always mount below
+				// the fold. Queue it and shoot once scrolling brings it on screen,
+				// rather than losing the only chance at the moment it appears.
+				pending[p.ID] = idx
 			}
 		}
-
-		res.Posts = append(res.Posts, p)
-		added++
 		if len(res.Posts) >= s.cfg.Session.MaxPosts {
 			break
 		}
@@ -348,9 +373,13 @@ func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (
 func (s *session) shoot(id string) (string, error) {
 	loc := s.page.Locator(selectors.S.TweetByID(id)).First()
 	path := filepath.Join(s.cfg.Paths.Screenshots, id+".png")
+	// Screenshot waits for the element to hold still. A live timeline animates
+	// constantly — spinners, media fading in — so without freezing animations
+	// roughly half of these time out waiting for a stability that never comes.
 	if _, err := loc.Screenshot(playwright.LocatorScreenshotOptions{
-		Path:    playwright.String(path),
-		Timeout: playwright.Float(8000),
+		Path:       playwright.String(path),
+		Animations: playwright.ScreenshotAnimationsDisabled,
+		Timeout:    playwright.Float(8000),
 	}); err != nil {
 		return "", err
 	}
