@@ -1,8 +1,8 @@
 # feed-engine
 
-Read-only X (Twitter) idea harvester. Scrolls an X List in a real logged-in
-Chrome profile, pulls post text off the DOM, sends the keepers through
-`claude -p`, and files the resulting idea seeds in local SQLite.
+Read-only X (Twitter) idea harvester. Scrolls your home feed or an X List in a
+real logged-in Chrome profile, pulls post text off the DOM, sends the keepers
+through `claude -p`, and files the resulting idea seeds in local SQLite.
 
 It never posts, likes, follows, replies, bookmarks, or DMs. There is no code
 path that writes to X. Credentials are never touched by the script — you log
@@ -15,20 +15,27 @@ Needs Go 1.25+, Google Chrome, and the `claude` CLI on PATH.
 ```powershell
 go build -o bin\feed-engine.exe .\cmd\feed-engine
 
-# 1. put your List URL in config.yaml (or config.local.yaml)
-# 2. log the alt account in, once:
+# 1. log the alt account in, once:
 .\bin\feed-engine.exe -login
-# 3. dry run: scrape only, nothing sent to claude and nothing banked
+# 2. dry run: scrape only, nothing sent to claude and nothing banked
 .\bin\feed-engine.exe -stage scrape -no-jitter
-# 4. full run
+# 3. full run
 .\bin\feed-engine.exe
 ```
 
 On macOS or Linux the build is `go build -o bin/feed-engine ./cmd/feed-engine`
 and the rest is identical.
 
-The List URL has to go in before `-login`: a placeholder or non-list URL is a
-hard startup error, and it fires before the browser opens.
+`list_urls` in `config.yaml` defaults to `https://x.com/home`. It also takes X
+List URLs — a List is quieter and higher signal, so switch once you have one
+built. Profiles, searches, and single posts are rejected at startup: they are
+not endless timelines and would scroll to nothing.
+
+The home feed is algorithmic and carries ads. Promoted posts are detected and
+dropped in the prefilter, before any model call, and never get screenshotted.
+That detection leans on X's ad container markup, which drifts — if ad copy ever
+shows up in the bank, `Promoted` in `internal/selectors/selectors.go` is what
+needs fixing.
 
 ## Stages
 
