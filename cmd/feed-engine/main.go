@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -406,13 +407,16 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, a
 			Platform:         "x",
 			Category:         category,
 			ThemeTags:        leadWithCategory(r.ThemeTags, category, r.Category),
-			Tension:          r.Tension,
-			AngleHint:        r.AngleHint,
+			Tension:          scrub(r.Tension),
+			AngleHint:        scrub(r.AngleHint),
 			ShelfLife:        r.ShelfLife,
 			PostAuthor:       author,
-			PostText:         truncate(text, 300),
-			SourcePostURL:    p.URL,
-			SourcePostID:     p.ID,
+			// The post text is someone else's words, quoted. Scrubbed anyway:
+			// it is fed to the ideation model as an example of how the idea was
+			// said, and an em dash in the example comes back in the output.
+			PostText:      truncate(scrub(text), 300),
+			SourcePostURL: p.URL,
+			SourcePostID:  p.ID,
 			// Media, not "we screenshotted it": what the reader needs to know
 			// is that there is an image to go and look at before writing.
 			Visual: p.HasMedia,
@@ -491,6 +495,38 @@ func capturedMillis(p model.Post) int64 {
 	}
 	return p.ScrapedAt.UnixMilli()
 }
+
+/*
+scrub strips the em dashes out of a seed's own prose.
+
+Every prompt in this project bans them as the single clearest AI tell, and the
+backend already scrubs the posts it generates. Seed text was the gap: it comes
+back from `claude -p` here, never passes through the backend's scrubber, and
+then does two things that matter. It is shown in the app, where a stray em dash
+in an angle hint is visible next to drafts that carefully have none. And it is
+fed to the ideation model as raw material, where the surest way to get an em
+dash back out is to put one in.
+
+Spaced double hyphens go too: once em dashes are banned the model reaches for
+those instead, which is the same tell in a different costume. Unspaced ones
+survive, so a command line flag in a technical tension is left alone.
+*/
+func scrub(s string) string {
+	replaced := emDashes.Replace(strings.TrimSpace(s))
+	return doubleComma.ReplaceAllString(replaced, ",")
+}
+
+var (
+	emDashes = strings.NewReplacer(
+		" -- ", ", ",
+		" — ", ", ",
+		"— ", ", ",
+		" —", ",",
+		"—", ",",
+	)
+	// Left over when an em dash sat next to a comma already: "a, , b".
+	doubleComma = regexp.MustCompile(`,\s*,`)
+)
 
 // truncate cuts to n runes, not bytes, so a multi-byte character can't be split
 // in half and land in the bank as a replacement glyph.

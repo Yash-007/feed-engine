@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Yash-007/feed-engine/internal/model"
@@ -196,5 +197,50 @@ func TestNormalizeCategory(t *testing.T) {
 	}
 	if got, _ := model.NormalizeCategory("  REPOST "); got != model.CategoryRepost {
 		t.Errorf("normalization should lowercase and trim, got %q", got)
+	}
+}
+
+// Em dashes are the project's clearest banned AI tell, and seed prose never
+// passes through the backend's scrubber, so it has to be cleaned here.
+func TestScrubRemovesEmDashes(t *testing.T) {
+	cases := map[string]string{
+		"the bottleneck moved — discipline wins": "the bottleneck moved, discipline wins",
+		"a thing —and another":                   "a thing,and another",
+		"spaced -- double hyphen":                "spaced, double hyphen",
+		"plain text with no dashes":              "plain text with no dashes",
+		"  leading and trailing  ":               "leading and trailing",
+		// A comma already next to the dash must not become a double comma.
+		"one thing, — and another": "one thing, and another",
+	}
+	for in, want := range cases {
+		if got := scrub(in); got != want {
+			t.Errorf("scrub(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Unspaced double hyphens are command line flags, not punctuation.
+	if got := scrub("pass --no-jitter to skip it"); got != "pass --no-jitter to skip it" {
+		t.Errorf("a flag must survive, got %q", got)
+	}
+}
+
+func TestAssembleScrubsSeedProse(t *testing.T) {
+	sent := []model.Post{post("9", "https://x.com/someone/status/9")}
+	r := reply("9", "take", "take")
+	r.Tension = "agents produce diffs faster — nobody can review them"
+	r.AngleHint = "from inside fintech — the review queue is the bottleneck"
+	r.PostText = "the original — as they said it"
+
+	seeds, _ := assemble([]model.SeedResponse{r}, sent)
+	if len(seeds) != 1 {
+		t.Fatalf("got %d seeds", len(seeds))
+	}
+	for name, got := range map[string]string{
+		"tension":    seeds[0].Tension,
+		"angle_hint": seeds[0].AngleHint,
+		"post_text":  seeds[0].PostText,
+	} {
+		if strings.Contains(got, "—") {
+			t.Errorf("%s still has an em dash: %q", name, got)
+		}
 	}
 }
