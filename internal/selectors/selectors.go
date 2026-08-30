@@ -8,7 +8,7 @@
 // Verified working: 2026-08-30. Bump Version when you edit anything below.
 package selectors
 
-const Version = "2026-08-30"
+const Version = "2026-08-30b"
 
 // S is the selector set. Values are plain CSS, evaluated in page context.
 type Set struct {
@@ -29,6 +29,11 @@ type Set struct {
 	Video string
 	Card  string
 	Poll  string
+
+	// Ad marker -> IsPromoted. Only the home timeline injects these; a List
+	// never does. Health cannot check this one: a feed with no ads and a broken
+	// ad selector look identical from here.
+	Promoted string
 
 	// Page-state probes
 	LoginLink  string // present when the profile is logged out
@@ -53,6 +58,8 @@ var S = Set{
 	Video: `div[data-testid="videoPlayer"], video`,
 	Card:  `div[data-testid="card.wrapper"], div[data-testid="card.layoutLarge.media"]`,
 	Poll:  `div[data-testid="cardPoll"]`,
+
+	Promoted: `div[data-testid="placementTracking"], [data-testid="promotedIndicator"]`,
 
 	LoginLink:  `a[href="/login"], a[data-testid="loginButton"]`,
 	LoginForm:  `input[name="text"][autocomplete="username"]`,

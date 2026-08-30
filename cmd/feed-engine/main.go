@@ -113,7 +113,8 @@ func run() error {
 	textPosts, visualPosts, st := filter.Apply(posts)
 	log.Info("prefilter",
 		"in", st.In, "kept", st.Kept, "text", st.KeptText, "visual", st.KeptShots,
-		"too_short", st.TooShort, "no_text", st.NoText, "already_seen", st.Seen)
+		"promoted", st.Promoted, "too_short", st.TooShort, "no_text", st.NoText,
+		"already_seen", st.Seen)
 
 	cc := claudecli.New(cfg.Claude, log)
 	var responses []model.SeedResponse

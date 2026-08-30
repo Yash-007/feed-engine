@@ -11,6 +11,7 @@ import (
 
 type Stats struct {
 	In        int
+	Promoted  int
 	TooShort  int
 	NoText    int
 	Seen      int
@@ -33,7 +34,7 @@ func New(cfg config.Prefilter, s Seen) *Filter { return &Filter{cfg: cfg, seen: 
 // visual AND says little in words, so the meaning lives in the image.
 // Already-seen posts never get shot — no point writing a PNG we won't send.
 func (f *Filter) WantShot(p model.Post) bool {
-	if !p.HasMedia || f.seen.Has(p.ID) {
+	if !p.HasMedia || p.IsPromoted || f.seen.Has(p.ID) {
 		return false
 	}
 	return p.WordCount < f.cfg.VisualMaxWords
@@ -49,6 +50,11 @@ func (f *Filter) Apply(posts []model.Post) (text, visual []model.Post, st Stats)
 		switch {
 		case f.seen.Has(p.ID):
 			st.Seen++
+			continue
+		// An ad is not an idea, however well written. The home timeline injects
+		// these; a List never does.
+		case p.IsPromoted:
+			st.Promoted++
 			continue
 		// A visual post is allowed to be short — the image carries it. Everything
 		// else has to clear the word floor.

@@ -23,18 +23,22 @@ func TestApply(t *testing.T) {
 	cfg := config.Prefilter{MinWords: 10, VisualMaxWords: 15}
 	f := New(cfg, fakeSeen{"old": true})
 
+	ad := post("ad", "our platform helps teams ship faster than ever, start your free trial", 13, false, false)
+	ad.IsPromoted = true
+
 	text, visual, st := f.Apply([]model.Post{
 		post("long", "a post with clearly more than ten words in its body for sure", 13, false, false),
 		post("short", "too short", 2, false, false),
 		post("notext", "", 0, true, false),
 		post("old", "already harvested on an earlier run with plenty of words here", 11, false, false),
 		post("chart", "look at this", 3, true, true), // short but the image carries it
+		ad, // long enough to pass the word floor, still an ad
 	})
 
-	if st.In != 5 || st.Kept != 2 {
+	if st.In != 6 || st.Kept != 2 {
 		t.Fatalf("kept %d of %d, want 2: %+v", st.Kept, st.In, st)
 	}
-	if st.TooShort != 1 || st.NoText != 1 || st.Seen != 1 {
+	if st.TooShort != 1 || st.NoText != 1 || st.Seen != 1 || st.Promoted != 1 {
 		t.Fatalf("drop counts wrong: %+v", st)
 	}
 	if len(text) != 1 || text[0].ID != "long" {
@@ -57,6 +61,7 @@ func TestWantShot(t *testing.T) {
 		{"media but wordy", post("b", "long caption", 40, true, false), false},
 		{"no media", post("c", "short", 3, false, false), false},
 		{"already seen", model.Post{ID: "seen", WordCount: 3, HasMedia: true}, false},
+		{"promoted", model.Post{ID: "d", WordCount: 3, HasMedia: true, IsPromoted: true}, false},
 	}
 	for _, c := range cases {
 		if got := f.WantShot(c.p); got != c.want {

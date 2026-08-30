@@ -13,9 +13,10 @@ type Post struct {
 	Text       string    `json:"text"`
 	Timestamp  string    `json:"timestamp"` // ISO-8601 from the <time datetime> attr
 	WordCount  int       `json:"word_count"`
-	HasMedia   bool      `json:"has_media"`  // photo, video, or link card present
-	IsRepost   bool      `json:"is_repost"`  // surfaced via a retweet social-context row
-	HasVisual  bool      `json:"has_visual"` // media + short text -> screenshotted
+	HasMedia   bool      `json:"has_media"`   // photo, video, or link card present
+	IsRepost   bool      `json:"is_repost"`   // surfaced via a retweet social-context row
+	IsPromoted bool      `json:"is_promoted"` // an ad injected into the home timeline
+	HasVisual  bool      `json:"has_visual"`  // media + short text -> screenshotted
 	ImagePath  string    `json:"image_path,omitempty"`
 	ListURL    string    `json:"list_url"`
 	ScrapedAt  time.Time `json:"scraped_at"`

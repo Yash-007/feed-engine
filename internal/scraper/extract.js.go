@@ -36,7 +36,8 @@ const extractScript = `
       // instead of looking like an empty timeline.
       rec.miss.push("permalink");
       rec.id = ""; rec.url = ""; rec.author = ""; rec.author_name = "";
-      rec.text = ""; rec.has_media = false; rec.is_repost = false; rec.visible = false;
+      rec.text = ""; rec.has_media = false; rec.is_repost = false;
+      rec.is_promoted = false; rec.visible = false;
       out.push(rec);
       continue;
     }
@@ -61,6 +62,7 @@ const extractScript = `
     rec.has_media = !!(art.querySelector(sel.photo) || art.querySelector(sel.video) ||
                        art.querySelector(sel.card) || art.querySelector(sel.poll));
     rec.is_repost = !!art.querySelector(sel.social);
+    rec.is_promoted = !!art.querySelector(sel.promoted);
 
     // on-screen box, used to decide whether an element screenshot is worth taking
     const r = art.getBoundingClientRect();

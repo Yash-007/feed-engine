@@ -44,6 +44,7 @@ type rawPost struct {
 	Timestamp  string   `json:"timestamp"`
 	HasMedia   bool     `json:"has_media"`
 	IsRepost   bool     `json:"is_repost"`
+	IsPromoted bool     `json:"is_promoted"`
 	Visible    bool     `json:"visible"`
 	Miss       []string `json:"miss"`
 }
@@ -225,6 +226,7 @@ func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (
 		"permalink": selectors.S.PermalinkAnc, "username": selectors.S.UserName,
 		"social": selectors.S.SocialContext, "photo": selectors.S.Photo,
 		"video": selectors.S.Video, "card": selectors.S.Card, "poll": selectors.S.Poll,
+		"promoted": selectors.S.Promoted,
 	}
 	raw, err := s.page.Evaluate(extractScript, arg)
 	if err != nil {
@@ -254,7 +256,8 @@ func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (
 			ID: r.ID, URL: r.URL, Author: r.Author, AuthorName: r.AuthorName,
 			Text: strings.TrimSpace(r.Text), Timestamp: r.Timestamp,
 			WordCount: wordCount(r.Text), HasMedia: r.HasMedia, IsRepost: r.IsRepost,
-			ListURL: res.ListURL, ScrapedAt: time.Now().UTC(),
+			IsPromoted: r.IsPromoted,
+			ListURL:    res.ListURL, ScrapedAt: time.Now().UTC(),
 		}
 
 		if want != nil && r.Visible && want(p) {
