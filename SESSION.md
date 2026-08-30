@@ -74,8 +74,10 @@ needs to know is that there is an image to go and look at before writing.
 
 ## Credentials
 
-The X account is `<redacted>`, in `config.local.yaml` (gitignored). Plaintext on
-disk, so rotate when convenient.
+The harvester's X account lives in `config.local.yaml`, which is gitignored.
+Deliberately not named here: this repo is public, and writing the handle into a
+tracked file links the alt account to everything else with his name on it.
+Plaintext on disk, so rotate the password when convenient.
 
 `login.auto_login` is false and should usually stay that way. Assisted login
 fills the username and password and then waits for a human, because X
