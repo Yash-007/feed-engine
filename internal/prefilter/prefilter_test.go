@@ -19,6 +19,40 @@ func post(id, text string, words int, media, visual bool) model.Post {
 	return p
 }
 
+func TestOwnPostsNeverSurvive(t *testing.T) {
+	cfg := config.Prefilter{MinWords: 10, VisualMaxWords: 15, OwnHandle: "yashx_404"}
+	f := New(cfg, fakeSeen{})
+
+	mine := post("mine", "a genuinely substantial post of my own with plenty of words in it", 13, false, false)
+	mine.Author = "yashx_404"
+	upper := post("upper", "another substantial post of mine written with plenty of words here", 12, false, false)
+	upper.Author = "YashX_404" // handle case must not matter
+	atSign := post("at", "and one more substantial post of mine with plenty of words in it", 13, false, false)
+	atSign.Author = "@yashx_404"
+	other := post("other", "someone else made this point with plenty of words in the body", 12, false, false)
+	other.Author = "someoneelse"
+
+	text, _, st := f.Apply([]model.Post{mine, upper, atSign, other})
+	if st.Own != 3 {
+		t.Fatalf("own = %d, want 3: %+v", st.Own, st)
+	}
+	if len(text) != 1 || text[0].ID != "other" {
+		t.Fatalf("only the other author should survive, got %+v", text)
+	}
+
+	// And they must never be screenshotted either, so no tokens or PNGs are spent.
+	shot := model.Post{ID: "s", Author: "yashx_404", WordCount: 3, HasMedia: true}
+	if f.WantShot(shot) {
+		t.Error("WantShot must refuse the operator's own post")
+	}
+
+	// Empty handle disables the rule rather than dropping everything.
+	off := New(config.Prefilter{MinWords: 10, VisualMaxWords: 15}, fakeSeen{})
+	if _, _, s2 := off.Apply([]model.Post{mine}); s2.Own != 0 || s2.Kept != 1 {
+		t.Errorf("empty own_handle must disable the rule, got %+v", s2)
+	}
+}
+
 func TestApply(t *testing.T) {
 	cfg := config.Prefilter{MinWords: 10, VisualMaxWords: 15}
 	f := New(cfg, fakeSeen{"old": true})

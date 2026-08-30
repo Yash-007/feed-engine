@@ -11,6 +11,7 @@ import (
 
 type Stats struct {
 	In        int
+	Own       int
 	Promoted  int
 	TooShort  int
 	NoText    int
@@ -34,10 +35,22 @@ func New(cfg config.Prefilter, s Seen) *Filter { return &Filter{cfg: cfg, seen: 
 // visual AND says little in words, so the meaning lives in the image.
 // Already-seen posts never get shot — no point writing a PNG we won't send.
 func (f *Filter) WantShot(p model.Post) bool {
-	if !p.HasMedia || p.IsPromoted || f.seen.Has(p.ID) {
+	if !p.HasMedia || p.IsPromoted || f.isOwn(p) || f.seen.Has(p.ID) {
 		return false
 	}
 	return p.WordCount < f.cfg.VisualMaxWords
+}
+
+// isOwn reports whether the post is the operator's own. The prompt is told never
+// to seed them, but dropping them here is free and structural: a self-post never
+// reaches the model, so it can't be seeded by a prompt that forgets the rule, and
+// it costs no tokens. Comparison ignores case and a leading @.
+func (f *Filter) isOwn(p model.Post) bool {
+	own := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f.cfg.OwnHandle), "@"))
+	if own == "" {
+		return false
+	}
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p.Author), "@")) == own
 }
 
 // Apply splits scraped posts into what goes to the text call, what goes to the
@@ -48,6 +61,11 @@ func (f *Filter) Apply(posts []model.Post) (text, visual []model.Post, st Stats)
 		body := strings.TrimSpace(p.Text)
 
 		switch {
+		// Checked before everything else: the bank must never be fed its own
+		// output, whatever else the post qualifies for.
+		case f.isOwn(p):
+			st.Own++
+			continue
 		case f.seen.Has(p.ID):
 			st.Seen++
 			continue
