@@ -184,7 +184,12 @@ func collect(ctx context.Context, log *slog.Logger, cfg *config.Config, filter *
 		startJitter(ctx, log, cfg.Session.StartJitterMaxSec)
 	}
 
-	posts, err := scrapeLists(ctx, log, cfg, filter.WantShot, listFlag)
+	targets, err := pickLists(cfg, listFlag)
+	if err != nil {
+		return nil, err
+	}
+
+	posts, err := scrapeLists(ctx, log, cfg, filter.WantShot, targets)
 	// Whatever came back is worth keeping even if the run died partway.
 	if werr := savePosts(cfg.Paths.PostsJSON, posts); werr != nil {
 		log.Error("could not write posts file", "err", werr)
@@ -192,8 +197,7 @@ func collect(ctx context.Context, log *slog.Logger, cfg *config.Config, filter *
 	return posts, err
 }
 
-func scrapeLists(ctx context.Context, log *slog.Logger, cfg *config.Config, want scraper.WantShot, override string) ([]model.Post, error) {
-	targets := pickLists(cfg, override)
+func scrapeLists(ctx context.Context, log *slog.Logger, cfg *config.Config, want scraper.WantShot, targets []string) ([]model.Post, error) {
 	var all []model.Post
 
 	for i, u := range targets {
@@ -216,16 +220,21 @@ func scrapeLists(ctx context.Context, log *slog.Logger, cfg *config.Config, want
 	return dedupe(all), nil
 }
 
-// pickLists honours rotate_lists: one list at random per run, or every list in
-// order. The session caps in config apply per list, not per run.
-func pickLists(cfg *config.Config, override string) []string {
+// pickLists honours rotate_lists: one timeline at random per run, or every one
+// in order. The session caps in config apply per timeline, not per run.
+func pickLists(cfg *config.Config, override string) ([]string, error) {
 	switch {
 	case override != "":
-		return []string{override}
+		// The config file's URLs are checked at load; -list has to clear the
+		// same bar, or a typo opens a browser onto a page that never scrolls.
+		if err := config.CheckTimelineURL(override); err != nil {
+			return nil, fmt.Errorf("-list: %w", err)
+		}
+		return []string{override}, nil
 	case cfg.RotateLists:
-		return []string{cfg.ListURLs[rand.Intn(len(cfg.ListURLs))]}
+		return []string{cfg.ListURLs[rand.Intn(len(cfg.ListURLs))]}, nil
 	default:
-		return cfg.ListURLs
+		return cfg.ListURLs, nil
 	}
 }
 

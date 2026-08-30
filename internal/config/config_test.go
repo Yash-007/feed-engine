@@ -1,8 +1,8 @@
-package config
+﻿package config
 
 import "testing"
 
-func TestTimelineURL(t *testing.T) {
+func TestCheckTimelineURL(t *testing.T) {
 	ok := []string{
 		"https://x.com/home",
 		"https://x.com/home/",
@@ -13,8 +13,8 @@ func TestTimelineURL(t *testing.T) {
 		"https://twitter.com/i/lists/1234567890",
 	}
 	for _, u := range ok {
-		if err := timelineURL(u); err != nil {
-			t.Errorf("timelineURL(%q) = %v, want nil", u, err)
+		if err := CheckTimelineURL(u); err != nil {
+			t.Errorf("CheckTimelineURL(%q) = %v, want nil", u, err)
 		}
 	}
 
@@ -26,8 +26,9 @@ func TestTimelineURL(t *testing.T) {
 		"https://x.com/i/bookmarks",        // not a list or the home feed
 	}
 	for _, u := range bad {
-		if err := timelineURL(u); err == nil {
-			t.Errorf("timelineURL(%q) = nil, want an error", u)
+		if err := CheckTimelineURL(u); err == nil {
+			t.Errorf("CheckTimelineURL(%q) = nil, want an error", u)
 		}
 	}
 }
+

@@ -152,7 +152,7 @@ func (c *Config) validate() error {
 		if strings.Contains(u, "REPLACE_WITH_LIST_ID") {
 			return fmt.Errorf("list_urls still holds the placeholder: %s", u)
 		}
-		if err := timelineURL(u); err != nil {
+		if err := CheckTimelineURL(u); err != nil {
 			return err
 		}
 	}
@@ -165,11 +165,14 @@ func (c *Config) validate() error {
 	return nil
 }
 
-// timelineURL accepts the two things the scraper can actually scroll: an X List
-// and the home timeline. A profile, a single status, or a search page either
-// paginates differently or is not an endless timeline at all, and would scroll
-// to nothing.
-func timelineURL(raw string) error {
+// CheckTimelineURL accepts the two things the scraper can actually scroll: an X
+// List and the home timeline. A profile, a single status, or a search page
+// either paginates differently or is not an endless timeline at all, and would
+// scroll to nothing.
+//
+// Exported because the -list override has to clear the same bar as the config
+// file, and it must fail before the browser starts, not after.
+func CheckTimelineURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("unparseable URL %q: %w", raw, err)
