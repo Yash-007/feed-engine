@@ -10,10 +10,13 @@ the alt account in by hand, once, into the persistent profile.
 
 ## Setup
 
-Needs Go 1.25+, Google Chrome, and the `claude` CLI on PATH.
+Needs Go 1.25+, Google Chrome, Node.js, and the `claude` CLI on PATH.
 
 ```powershell
 go build -o bin\feed-engine.exe .\cmd\feed-engine
+
+# once per machine: playwright-go cannot fetch its own driver any more
+.\scripts\install-driver.ps1
 
 # 1. log the alt account in, once:
 .\bin\feed-engine.exe -login
@@ -61,6 +64,7 @@ lists, `-no-jitter` to skip the random start delay, `-debug`.
 | `internal/claudecli` | `claude -p` invocation, JSON guard, one retry |
 | `internal/store` | SQLite `idea_seeds`, theme dedupe |
 | `prompts/` | the filter-and-seed prompts, edit freely |
+| `scripts/install-driver.ps1` | installs the Playwright driver npm-side |
 | `scripts/run.ps1` | Task Scheduler wrapper (Windows) |
 | `scripts/install-task.ps1` | registers/removes the scheduled task |
 | `scripts/run.sh` | cron/launchd wrapper (macOS/Linux) |
@@ -91,6 +95,19 @@ macOS/Linux use `scripts/run.sh` from cron, or launchd on macOS:
 43 14 * * * /path/to/feed-engine/scripts/run.sh
 09 21 * * * /path/to/feed-engine/scripts/run.sh
 ```
+
+## Playwright driver
+
+`playwright-go` is pinned at v0.5200.1 — do not bump it to v0.6201.x, whose
+module path still declares `github.com/mxschmitt/playwright-go` and breaks
+`go mod tidy`.
+
+That pinned version downloads its driver from `playwright.azureedge.net` and two
+sibling mirrors, all of which were retired and now 404. Its built-in auto-install
+therefore always fails, with a misleading "please install the driver first".
+`scripts/install-driver.ps1` builds the driver directory from npm instead, which
+is the same content by a route that still works. Run it once per machine, and
+again if you ever clear `%LOCALAPPDATA%\ms-playwright-go`.
 
 ## When X changes its DOM
 
