@@ -11,24 +11,95 @@ Chrome profile, drops the posts not worth a model call, sends the keepers
 through `claude -p`, and banks the resulting idea seeds in local SQLite.
 
 It never posts, likes, follows, replies, bookmarks or DMs. There is no code path
-that writes to X. Credentials are never touched by the code — the alt account is
-signed in by hand, once, into a persistent Chrome profile.
+that writes to X. The one outbound write it makes is to the Feed Runner backend,
+and only when switched on: see "The push".
 
-## Status: working end to end, verified against live X
+Credentials can now be configured (see "Credentials"), but the supported path is
+still signing in by hand, once, into the persistent Chrome profile.
 
-A full `-stage all` run has been executed successfully against the real feed.
-Last verified numbers (50-post run):
+## Status: working end to end, verified against live X AND the bank
+
+`POST /seeds` is no longer the open integration: harvested seeds reach the Feed
+Runner backend, and from there the phone. See "The push" below.
+
+Last verified numbers (2026-08-31, this Windows laptop):
 
 ```
-scrape    50 posts, 3 shots, 20 scrolls, 1m40s
-health    articles=209 misses=map[text:16 time:43]
-prefilter kept 25 (22 text, 3 visual) - 19 promoted, 6 too short
-claude    22 -> 6 seeds  |  3 visual -> 1 seed
+scrape    50 posts, 4 shots, 25 scrolls, 2m48s
+health    articles=202 misses=map[text:23 time:37]
+prefilter kept 20 (16 text, 4 visual) - 21 promoted, 7 too short, 1 no text
+claude    16 -> 5 seeds  |  4 visual -> 2 seeds
 banked    7 inserted
+pushed    7 sent, 0 duplicate, 0 failed
 ```
 
 Every stage has been exercised on real data. `go build`, `go vet` and
 `go test ./...` are all clean.
+
+## The push
+
+Seeds go to the backend after they are banked locally, never before: SQLite is
+the source of truth, so a crash mid-push costs a retry rather than a seed.
+
+- Off by default (`bank.enabled`), and startup fails if it is on with no token.
+  This is the only outbound write in an otherwise read-only tool, and it writes
+  into a live personal account.
+- `posted_at` is the outbox. A run that finds the backend asleep leaves rows
+  unstamped; the next run picks them up. `-stage push` drains the queue with no
+  browser and no model calls.
+- Delivery is at-least-once, made safe by `client_seed_id`: the server answers
+  `duplicate: true` rather than storing a second copy. Verified by un-stamping a
+  delivered row and re-pushing.
+- A rejected token stops the run rather than failing once per seed.
+- The token lives in `config.local.yaml` (gitignored) or
+  `FEED_ENGINE_BANK_TOKEN`. Currently the shared Render API_TOKEN, which the
+  backend resolves to OWNER_USERNAME — chosen over a phone session token because
+  a session token dies when you sign out on the phone.
+
+## The repost category
+
+`repost` marks a post worth QUOTE-TWEETING rather than writing around. It is the
+one exception to transform-never-copy, since the original stays visible beside
+the line, so the prompts hold it to a higher bar: punch up or sideways only,
+never a small account or someone's honest work, and prefer `take` when unsure.
+
+A repost seed needs its permalink to be actionable, so `assemble` demotes one
+without a URL to `take` rather than banking an action with no target. The
+backend's ideation prompt has a matching QUOTE_POST play that writes the line
+sitting above the quoted post rather than a standalone one.
+
+`visual` now means the ORIGINAL CARRIES MEDIA, not that this engine
+screenshotted it. A text post with a chart attached counts: what the reader
+needs to know is that there is an image to go and look at before writing.
+
+## Credentials
+
+The X account is `<redacted>`, in `config.local.yaml` (gitignored). Plaintext on
+disk, so rotate when convenient.
+
+`login.auto_login` is false and should usually stay that way. Assisted login
+fills the username and password and then waits for a human, because X
+interleaves a phone/handle challenge or a 2FA code often enough that pretending
+to fully automate it just fails confusingly. `-login` remains the supported
+path: sign in by hand once, into the persistent profile.
+
+## Scheduling
+
+Registered on this laptop: 09:17 / 14:43 / 21:09 daily, Interactive logon.
+
+One double-click each, in `scripts/`:
+
+| File | Does |
+|---|---|
+| `feed-engine-enable.cmd` | preflight, then register the task |
+| `feed-engine-disable.cmd` | unregister it; touches nothing else |
+| `feed-engine-run-now.cmd` | one full harvest in this window, no jitter |
+| `feed-engine-status.cmd` | preflight + last/next run + last 20 log lines |
+
+`preflight.ps1` is what makes those safe to double-click: it checks the binary,
+the driver, `claude` on PATH, Chrome, the profile, the bank token and the task
+state, and refuses to enable while anything is missing. Those failures otherwise
+surface as a silent no-op three hours later in `data/run.log`.
 
 ## Layout
 
@@ -136,12 +207,12 @@ Engine-side rules that back the prompt up (do not remove these):
 
 ## Not built
 
-- **`POST /seeds` to the Feed Runner backend.** The prompt's "FOR THE ENGINE"
-  section describes posting each seed to a backend with a Bearer token. No base
-  URL or credential was supplied, and it is an outbound write to a live account,
-  so it was deliberately not implemented. Rows are stored in the wire format and
-  are POST-ready. This is the main open integration.
-- Nothing consumes the bank. No seed ever leaves `status = 'new'`.
+- **Nothing sends status back.** The app can mark a seed posted or skipped, and
+  the engine never learns: `posted_at` tracks delivery to the backend, not what
+  happened to the idea afterwards. The local bank therefore only grows.
+- **No aging.** Related to the above: at roughly 20 seeds a day, the bank and
+  the app's list both grow without bound. Marking seeds posted/skipped in the
+  app is the current pressure valve, and it is manual.
 
 ## Open, low-priority
 

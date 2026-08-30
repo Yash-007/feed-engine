@@ -5,8 +5,12 @@ real logged-in Chrome profile, pulls post text off the DOM, sends the keepers
 through `claude -p`, and files the resulting idea seeds in local SQLite.
 
 It never posts, likes, follows, replies, bookmarks, or DMs. There is no code
-path that writes to X. Credentials are never touched by the script — you log
-the alt account in by hand, once, into the persistent profile.
+path that writes to X. The one outbound write it makes is pushing the seeds it
+finds to the Feed Runner backend, which is off unless you switch it on.
+
+Credentials can be configured so the sign-in form gets filled for you, but the
+supported path is still logging the alt account in by hand, once, into the
+persistent profile.
 
 ## Setup
 
@@ -44,9 +48,10 @@ needs fixing.
 
 | `-stage` | Does |
 |---|---|
-| `all` (default) | scrape → prefilter → claude → SQLite |
+| `all` (default) | scrape → prefilter → claude → SQLite → push to the bank |
 | `scrape` | scrape and write `data/posts.json`, nothing else. Costs no model calls |
 | `seed` | skip the browser, re-read `data/posts.json`, run the model pass |
+| `push` | only drain the outbox to the backend. No browser, no model calls |
 
 `seed` is the loop for editing prompts: scrape once, then re-seed as often as
 you like. Other flags: `-config`, `-list <url>` to override the configured
@@ -69,10 +74,43 @@ lists, `-no-jitter` to skip the random start delay, `-debug`.
 | `scripts/install-task.ps1` | registers/removes the scheduled task |
 | `scripts/run.sh` | cron/launchd wrapper (macOS/Linux) |
 
+## Pushing seeds to the app
+
+Harvested seeds only reach your phone if the push is on. It is off by default:
+this is the one outbound write here, and it writes into a live account.
+
+Put the two secrets in `config.local.yaml`, which is gitignored, or in the
+environment, which leaves nothing on disk at all:
+
+```yaml
+bank:
+  enabled: true
+  token: "..."      # or export FEED_ENGINE_BANK_TOKEN
+```
+
+Then `-stage push` drains whatever is queued, with no browser and no model
+calls, which is also how you retry after the backend was asleep. A seed is only
+stamped as delivered once the server confirms it, and re-sending one it already
+has is safe: the id makes it answer `duplicate` rather than storing a copy.
+
 ## Scheduling
 
-Both wrappers add their own random delay on top of `start_jitter_max_sec` and
-hold a PID lock, so two runs a day never land on the same minute and a long
+Four double-clickable files in `scripts/`, if you would rather not use a shell:
+
+| File | Does |
+|---|---|
+| `feed-engine-enable.cmd` | check prerequisites, then register the scheduled task |
+| `feed-engine-disable.cmd` | unregister it; nothing else is touched |
+| `feed-engine-run-now.cmd` | one full harvest right now, in this window |
+| `feed-engine-status.cmd` | what is set up, when it last ran, last 20 log lines |
+
+`scripts/preflight.ps1` backs those up. It checks the binary, the Playwright
+driver, `claude` on PATH, Chrome, the profile and the bank token, and refuses
+to enable while anything is missing — those all otherwise fail as a silent
+no-op hours later in `data/run.log`.
+
+Both cron wrappers add their own random delay on top of `start_jitter_max_sec`
+and hold a PID lock, so two runs a day never land on the same minute and a long
 scroll session never overlaps the next tick.
 
 Windows, once a manual run has worked:
