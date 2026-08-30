@@ -29,7 +29,17 @@ const extractScript = `
       if (anc) href = anc.getAttribute("href") || "";
     }
     const m = href.match(/^\/([^\/]+)\/status\/(\d+)/);
-    if (!m) { rec.miss.push("permalink"); continue; }
+    if (!m) {
+      // No id means no dedupe key, so the post is unusable. Emit it anyway with
+      // an empty id: the caller skips those but still counts the article, which
+      // is what makes a broken permalink selector show up in the health line
+      // instead of looking like an empty timeline.
+      rec.miss.push("permalink");
+      rec.id = ""; rec.url = ""; rec.author = ""; rec.author_name = "";
+      rec.text = ""; rec.has_media = false; rec.is_repost = false; rec.visible = false;
+      out.push(rec);
+      continue;
+    }
     rec.author = m[1];
     rec.id = m[2];
     rec.url = "https://x.com" + href.split("/analytics")[0].split("/photo")[0];
