@@ -3,7 +3,7 @@
 #
 # Register it with scripts\install-task.ps1 once the first manual run works.
 #
-# Headed Chrome needs an unlocked desktop session — the scheduled task is
+# Headed Chrome needs an unlocked desktop session - the scheduled task is
 # registered to run only while you are logged in, on purpose.
 
 $ErrorActionPreference = 'Stop'
