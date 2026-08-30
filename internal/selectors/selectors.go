@@ -8,7 +8,7 @@
 // Verified working: 2026-08-30. Bump Version when you edit anything below.
 package selectors
 
-const Version = "2026-08-30b"
+const Version = "2026-08-30c"
 
 // S is the selector set. Values are plain CSS, evaluated in page context.
 type Set struct {
@@ -61,8 +61,14 @@ var S = Set{
 
 	Promoted: `div[data-testid="placementTracking"], [data-testid="promotedIndicator"]`,
 
-	LoginLink:  `a[href="/login"], a[data-testid="loginButton"]`,
-	LoginForm:  `input[name="text"][autocomplete="username"]`,
+	// Verified against the live logged-out splash on 2026-08-30: x.com/home
+	// redirects to x.com/ and renders a sign-in form with no "login" anchors at
+	// all, so anchor-based probes silently pass and the run then dies 45s later
+	// blaming the tweet selector. Match the form itself instead.
+	LoginLink: `a[href="/login"], a[href^="/i/flow/login"], a[data-testid="loginButton"], ` +
+		`div[data-testid="google_sign_in_container"]`,
+	LoginForm: `input[name="username_or_email"], input[name="password"], ` +
+		`input[name="text"][autocomplete^="username"]`,
 	ErrorRetry: `button[role="button"]:has-text("Retry")`,
 	EmptyState: `div[data-testid="empty_state_header_text"]`,
 }

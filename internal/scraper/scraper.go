@@ -121,12 +121,26 @@ func Login(log *slog.Logger, cfg *config.Config, wait func()) error {
 	}
 	log.Info("browser open — log the alt account in by hand, then press Enter here")
 	wait()
-	if s.loggedOut() {
+	switch err := s.settle(); {
+	case err != nil:
+		log.Warn("page never settled, cannot tell whether the session took", "err", err)
+	case s.loggedOut():
 		log.Warn("still looks logged out; the profile may not have a session")
-	} else {
+	default:
 		log.Info("session looks good", "profile", cfg.Browser.ProfileDir)
 	}
 	return nil
+}
+
+// settle waits for X's client-side render to produce either the timeline or the
+// sign-in form. Any login-state check made before this is looking at an empty
+// DOM and will answer "logged in" no matter what the truth is.
+func (s *session) settle() error {
+	probe := strings.Join([]string{selectors.S.Tweet, selectors.S.LoginLink, selectors.S.LoginForm}, ", ")
+	return s.page.Locator(probe).First().WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateAttached,
+		Timeout: playwright.Float(float64(s.cfg.Browser.NavTimeoutMS)),
+	})
 }
 
 func (s *session) loggedOut() bool {
@@ -156,20 +170,29 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 		return res, fmt.Errorf("goto %s: %w", listURL, err)
 	}
 
+	// X renders client-side: at domcontentloaded neither the timeline nor the
+	// sign-in form exists yet, so probing for either one immediately always
+	// comes back empty. Wait for whichever lands first, then decide. Checking
+	// login state too early is what makes a logged-out profile look like DOM
+	// drift 45 seconds later.
+	if err := s.settle(); err != nil {
+		if n, _ := s.page.Locator(selectors.S.EmptyState).Count(); n > 0 {
+			return res, fmt.Errorf("timeline rendered but is empty: %s", listURL)
+		}
+		return res, fmt.Errorf("neither posts nor a sign-in form appeared at %s — selector drift: %w",
+			listURL, err)
+	}
+
 	if s.loggedOut() {
 		return res, fmt.Errorf("profile is logged out — run with -login and sign the alt account in once")
 	}
 
-	// First posts must render, or the selector or the list itself is wrong.
-	if err := s.page.Locator(selectors.S.Tweet).First().WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateAttached,
-		Timeout: playwright.Float(float64(cfg.Browser.NavTimeoutMS)),
-	}); err != nil {
-		if n, _ := s.page.Locator(selectors.S.EmptyState).Count(); n > 0 {
-			return res, fmt.Errorf("list rendered but is empty: %s", listURL)
+	if n, _ := s.page.Locator(selectors.S.Tweet).Count(); n == 0 {
+		if e, _ := s.page.Locator(selectors.S.EmptyState).Count(); e > 0 {
+			return res, fmt.Errorf("timeline rendered but is empty: %s", listURL)
 		}
-		return res, fmt.Errorf("no posts matched %q — selector drift or a bad list URL: %w",
-			selectors.S.Tweet, err)
+		return res, fmt.Errorf("signed in, but no posts matched %q — selector drift or a bad timeline URL: %s",
+			selectors.S.Tweet, listURL)
 	}
 
 	deadline := began.Add(time.Duration(cfg.Session.MaxMinutes) * time.Minute)
