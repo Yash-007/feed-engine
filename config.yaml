@@ -26,8 +26,13 @@ browser:
   profile_dir: "~/.feed-engine/chrome-profile" # persistent logged-in profile; log the alt account in ONCE by hand
   channel: "chrome"         # chrome | msedge | "" for bundled chromium
   headless: false           # run headed, per design
+  # Runs headed, so the window must fit the physical screen. Chrome's title bar,
+  # tab strip and omnibox eat roughly 110px above the viewport: keep
+  # viewport_height at least that far under your desktop working area, or the
+  # bottom of the page (sign-in button, post text) renders off-screen.
+  # This laptop: 1920x1080 at 125% scaling = 1536x864 logical, 816 usable.
   viewport_width: 1280
-  viewport_height: 1000
+  viewport_height: 700
   nav_timeout_ms: 45000
 
 paths:
