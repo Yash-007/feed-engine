@@ -1,11 +1,16 @@
 # feed-engine config. Copy to config.local.yaml for machine-specific overrides.
 
 list_urls:
-  # X List URLs to harvest. Add as many as you like; one is picked at random per run
-  # (or all of them, round-robin, if rotate_lists is false).
-  - "https://x.com/i/lists/REPLACE_WITH_LIST_ID"
+  # Timelines to harvest: the home feed, or any X List URL. Add as many as you
+  # like; one is picked at random per run (or all of them, in order, if
+  # rotate_lists is false).
+  #
+  # The home feed is algorithmic and carries ads — promoted posts are detected
+  # and dropped before any model call. A List is quieter and higher signal, so
+  # move to one when you have a good list built.
+  - "https://x.com/home"
 
-rotate_lists: true          # true = random list per run, false = walk every list in order
+rotate_lists: true          # true = random timeline per run, false = walk every one in order
 
 session:
   max_minutes: 13           # hard stop on wall-clock scrolling time

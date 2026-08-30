@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,8 +152,8 @@ func (c *Config) validate() error {
 		if strings.Contains(u, "REPLACE_WITH_LIST_ID") {
 			return fmt.Errorf("list_urls still holds the placeholder: %s", u)
 		}
-		if !strings.Contains(u, "/lists/") {
-			return fmt.Errorf("not an X list URL: %s", u)
+		if err := timelineURL(u); err != nil {
+			return err
 		}
 	}
 	if c.Session.ScrollMinMS > c.Session.ScrollMaxMS {
@@ -162,6 +163,26 @@ func (c *Config) validate() error {
 		return fmt.Errorf("max_posts and max_minutes must be > 0")
 	}
 	return nil
+}
+
+// timelineURL accepts the two things the scraper can actually scroll: an X List
+// and the home timeline. A profile, a single status, or a search page either
+// paginates differently or is not an endless timeline at all, and would scroll
+// to nothing.
+func timelineURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("unparseable URL %q: %w", raw, err)
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Host), "www.")
+	if host != "x.com" && host != "twitter.com" {
+		return fmt.Errorf("not an x.com URL: %s", raw)
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	if strings.Contains(path, "/lists/") || path == "/home" || path == "" {
+		return nil
+	}
+	return fmt.Errorf("not a scrollable timeline, want /home or a /lists/ URL: %s", raw)
 }
 
 // EnsureDirs creates every directory the run writes into.
