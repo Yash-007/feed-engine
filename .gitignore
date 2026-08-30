@@ -13,5 +13,8 @@ config.local.yaml
 
 # build
 bin/
-feed-engine
+# root-anchored: a bare "feed-engine" would also match cmd/feed-engine/ and
+# silently keep the entrypoint out of the repo.
+/feed-engine
+/feed-engine.exe
 .DS_Store
