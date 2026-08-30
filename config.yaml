@@ -1,0 +1,52 @@
+# feed-engine config. Copy to config.local.yaml for machine-specific overrides.
+
+list_urls:
+  # X List URLs to harvest. Add as many as you like; one is picked at random per run
+  # (or all of them, round-robin, if rotate_lists is false).
+  - "https://x.com/i/lists/REPLACE_WITH_LIST_ID"
+
+rotate_lists: true          # true = random list per run, false = walk every list in order
+
+session:
+  max_minutes: 13           # hard stop on wall-clock scrolling time
+  max_posts: 150            # hard stop on posts collected
+  scroll_min_ms: 2000       # randomized pause between scrolls (jitter floor)
+  scroll_max_ms: 8000       # jitter ceiling
+  scroll_px_min: 500        # randomized scroll distance
+  scroll_px_max: 1400
+  idle_scrolls_before_stop: 6 # consecutive scrolls yielding no new posts -> stop
+  start_jitter_max_sec: 420 # random delay before starting, so cron runs aren't identical
+
+browser:
+  profile_dir: "~/.feed-engine/chrome-profile" # persistent logged-in profile; log the alt account in ONCE by hand
+  channel: "chrome"         # chrome | msedge | "" for bundled chromium
+  headless: false           # run headed, per design
+  viewport_width: 1280
+  viewport_height: 1000
+  nav_timeout_ms: 45000
+
+paths:
+  db: "./data/ideas.db"
+  posts_json: "./data/posts.json"
+  seen_ids: "./data/seen_ids.json"
+  screenshots: "./data/shots"
+  log: "./data/run.log"
+
+prefilter:
+  min_words: 10             # drop anything shorter
+  visual_max_words: 15      # media + text under this -> screenshot it
+  seen_retention_days: 90   # prune the seen-id store past this
+
+claude:
+  bin: "claude"
+  text_prompt: "./prompts/filter_and_seed.md"
+  visual_prompt: "./prompts/filter_and_seed_visual.md"
+  text_batch_size: 25       # posts per text call
+  visual_batch_size: 4      # screenshots per vision call
+  timeout_sec: 300
+  extra_args: []                          # e.g. ["--model","sonnet"]
+  visual_extra_args: ["--allowedTools","Read"] # vision call needs Read to open the PNGs
+
+dedupe:
+  recent_seeds: 200         # compare new seeds against this many recent rows
+  theme_overlap: 0.6        # jaccard on theme_tags at/above this -> treat as duplicate

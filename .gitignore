@@ -1,0 +1,17 @@
+# runtime data, never commit
+data/
+*.db
+*.db-shm
+*.db-wal
+chrome-profile/
+posts.json
+seen_ids.json
+run.log
+
+# local overrides
+config.local.yaml
+
+# build
+bin/
+feed-engine
+.DS_Store
