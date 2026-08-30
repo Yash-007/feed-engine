@@ -87,6 +87,28 @@ path: sign in by hand once, into the persistent profile.
 
 Registered on this laptop: 09:17 / 14:43 / 21:09 daily, Interactive logon.
 
+**Verified by actually firing it, twice, 2026-08-31.** Worth knowing what that
+found, because the wrapper test alone said everything was fine:
+
+- Run 1 FAILED and `run.log` did not say so. It ended with a cheerful
+  `list done posts=0` and nothing else, because `main()` printed the fatal
+  error to stderr and nobody reads stderr under Task Scheduler. `LastTaskResult`
+  was 1, so only the scheduler knew. Fixed: fatal errors go through the logger
+  now. A `-stage push` wrapper test cannot catch this class of thing — it makes
+  no browser or model calls, so it never reaches the part that breaks.
+- The failure itself was transient: X did not render the timeline inside the 45s
+  nav timeout, twice, then worked fine four minutes later. That cost the whole
+  slot. `settle()` reloads once before giving up now.
+- Run 2 was clean end to end, `LastTaskResult: 0`: jitter 2m33s, 50 posts,
+  32 kept, 3 claude batches, 9 seeds banked, 9 pushed, 0 failed, 0 pending.
+  Selector health 197 articles / text:4 time:39.
+
+Timing to expect: the wrapper adds up to 10 minutes of random delay and the
+binary adds up to 7 more on top, so a fired run can sit doing nothing for a
+quarter of an hour before Chrome opens. That is deliberate. `FEED_ENGINE_MAX_DELAY`
+only affects the wrapper, and only when exported into the process that runs it —
+setting it in your own shell does NOT reach a scheduler-launched run.
+
 One double-click each, in `scripts/`:
 
 | File | Does |
@@ -140,6 +162,12 @@ These are non-obvious and will waste your time if you rediscover them:
 - **Never round-trip Go files through PowerShell `Get-Content`/`Set-Content`.**
   It reads UTF-8 as ANSI and will corrupt every em dash into `â€"`. Use the
   editor tools. (This already happened once to `cmd/feed-engine/main.go`.)
+- **`curl ... | python` lies about non-ASCII, the same way.** Python on Windows
+  decodes stdin with the console code page, so UTF-8 from the wire arrives as
+  `â€"` and it looks exactly like corrupted data in the database. It is not:
+  the corruption is in the pipe. This cost a real "we have mojibake in Mongo"
+  scare. Write the response to a file and read it with an explicit
+  `encoding='utf-8'`, or export `PYTHONIOENCODING=utf-8`.
 - `core.autocrlf` is on, so `gofmt -l` lists every file regardless. It is not a
   formatting problem. Only trust `gofmt -w` on files you actually edited, and
   check `git diff --ignore-cr-at-eol` before concluding anything changed.
