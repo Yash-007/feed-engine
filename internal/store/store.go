@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS idea_seeds (
   source_post_url    TEXT,
   source_post_id     TEXT,
   visual             INTEGER NOT NULL DEFAULT 0,
-  status             TEXT NOT NULL DEFAULT 'new'
+  status             TEXT NOT NULL DEFAULT 'new',
+  -- NULL until the seed reaches the Feed Runner backend. This is the outbox:
+  -- a run that cannot reach the bank leaves rows unstamped and the next run
+  -- picks them up, so seeds are never lost to the backend being asleep.
+  posted_at          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_seeds_created ON idea_seeds(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_seeds_status  ON idea_seeds(status);
@@ -42,19 +46,32 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_seeds_post ON idea_seeds(source_post_id)
   WHERE source_post_id IS NOT NULL AND source_post_id <> '';
 `
 
-// migrations bring a bank created by the older schema up to the wire format.
-// CREATE TABLE IF NOT EXISTS silently does nothing to an existing table, so the
-// added columns have to be applied by hand; "duplicate column" just means the
-// migration already ran.
+/*
+migrations bring a bank created by an older schema up to the current one.
+
+CREATE TABLE IF NOT EXISTS silently does nothing to an existing table, so every
+added column has to be applied by hand here; "duplicate column" just means the
+migration already ran.
+
+Anything that DEPENDS on an added column belongs at the end of this list, not in
+the schema block above. The schema runs first, so a partial index over
+posted_at placed up there fails outright on every bank that predates the
+column, and Open returns "no such column" instead of migrating.
+*/
 var migrations = []string{
 	`ALTER TABLE idea_seeds ADD COLUMN captured_at_millis INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE idea_seeds ADD COLUMN source TEXT NOT NULL DEFAULT 'harvest'`,
 	`ALTER TABLE idea_seeds ADD COLUMN platform TEXT NOT NULL DEFAULT 'x'`,
 	`ALTER TABLE idea_seeds ADD COLUMN post_author TEXT`,
 	`ALTER TABLE idea_seeds ADD COLUMN post_text TEXT`,
+	`ALTER TABLE idea_seeds ADD COLUMN posted_at TEXT`,
 	// Carry the old column values across, where the old columns still exist.
 	`UPDATE idea_seeds SET post_author = source_author WHERE post_author IS NULL`,
 	`UPDATE idea_seeds SET post_text = source_post_text WHERE post_text IS NULL`,
+	// Depends on posted_at above. Partial, because the pending set is what
+	// every run queries and it is usually tiny next to the whole bank.
+	`CREATE INDEX IF NOT EXISTS idx_seeds_unposted ON idea_seeds(created_at)
+	   WHERE posted_at IS NULL`,
 }
 
 type DB struct{ sql *sql.DB }
@@ -69,12 +86,12 @@ func Open(path string) (*DB, error) {
 		h.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	// Best effort: every one of these fails harmlessly on a bank that already has
-	// the column, and there is nothing to migrate on a fresh file.
+	// Best effort, in order. Every one of these fails harmlessly on a bank that
+	// already has the column, and there is nothing to migrate on a fresh file,
+	// so a failure here is not worth refusing to open over. Ordering matters:
+	// see the note on migrations.
 	for _, m := range migrations {
-		if _, err := h.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			continue
-		}
+		_, _ = h.Exec(m)
 	}
 	return &DB{sql: h}, nil
 }
@@ -180,6 +197,94 @@ func (d *DB) recentThemes(n int) ([][]string, error) {
 func (d *DB) Count(status string) (int, error) {
 	var n int
 	err := d.sql.QueryRow(`SELECT COUNT(*) FROM idea_seeds WHERE status = ?`, status).Scan(&n)
+	return n, err
+}
+
+// Unposted returns seeds that have not reached the backend yet, oldest first,
+// capped at limit.
+//
+// Oldest first on purpose: seeds are read newest-first in the app, so pushing a
+// backlog in creation order means the bank fills in the order things actually
+// happened rather than backwards.
+func (d *DB) Unposted(limit int) ([]model.IdeaSeed, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// COALESCE on every nullable text column: rows migrated from the old schema
+	// can hold NULL where a fresh insert would write "", and a NULL scanned
+	// into a string is an error that would wedge the whole queue.
+	rows, err := d.sql.Query(`SELECT id, created_at, captured_at_millis,
+	  COALESCE(source, 'harvest'), COALESCE(platform, 'x'),
+	  COALESCE(category, ''), theme_tags, COALESCE(tension, ''),
+	  COALESCE(angle_hint, ''), COALESCE(shelf_life, ''),
+	  COALESCE(post_author, ''), COALESCE(post_text, ''),
+	  COALESCE(source_post_url, ''), COALESCE(source_post_id, ''),
+	  COALESCE(visual, 0), COALESCE(status, 'new')
+	  FROM idea_seeds WHERE posted_at IS NULL
+	  ORDER BY created_at ASC, id ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("load unposted seeds: %w", err)
+	}
+	defer rows.Close()
+
+	var out []model.IdeaSeed
+	for rows.Next() {
+		var s model.IdeaSeed
+		var created string
+		var tags sql.NullString
+		var visual int
+		if err := rows.Scan(&s.ID, &created, &s.CapturedAtMillis, &s.Source, &s.Platform,
+			&s.Category, &tags, &s.Tension, &s.AngleHint, &s.ShelfLife,
+			&s.PostAuthor, &s.PostText, &s.SourcePostURL, &s.SourcePostID,
+			&visual, &s.Status); err != nil {
+			return nil, err
+		}
+		s.Visual = visual == 1
+		if t, err := time.Parse(time.RFC3339, created); err == nil {
+			s.CreatedAt = t
+		}
+		if tags.Valid && tags.String != "" {
+			_ = json.Unmarshal([]byte(tags.String), &s.ThemeTags)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// MarkPosted stamps seeds as delivered to the backend.
+//
+// Called only after the server has confirmed each one, including the duplicate
+// case: a seed the server already holds is delivered, and leaving it unstamped
+// would re-push it forever.
+func (d *DB) MarkPosted(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`UPDATE idea_seeds SET posted_at = ? WHERE id = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, id := range ids {
+		if _, err := stmt.Exec(now, id); err != nil {
+			return fmt.Errorf("mark posted %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// PendingCount is how many seeds are still waiting for the backend.
+func (d *DB) PendingCount() (int, error) {
+	var n int
+	err := d.sql.QueryRow(`SELECT COUNT(*) FROM idea_seeds WHERE posted_at IS NULL`).Scan(&n)
 	return n, err
 }
 

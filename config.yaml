@@ -59,6 +59,37 @@ claude:
   extra_args: []                          # e.g. ["--model","sonnet"]
   visual_extra_args: ["--allowedTools","Read"] # vision call needs Read to open the PNGs
 
+bank:
+  # Pushing harvested seeds to the Feed Runner backend. This is the ONLY
+  # outbound write the engine makes, and it writes into a live personal
+  # account, so it stays off until you turn it on.
+  #
+  # The token is a session token from the app ("fr_" + 64 hex). Do NOT put it
+  # here: this file is committed. Put it in config.local.yaml (gitignored) as
+  #     bank:
+  #       token: "fr_..."
+  # or leave it empty and export FEED_ENGINE_BANK_TOKEN, which leaves no copy
+  # on disk at all. The env var wins over both files.
+  enabled: false
+  base_url: "https://feed-runner-backend.onrender.com"
+  token: ""
+  timeout_sec: 60           # generous: the free tier cold-boots in ~30s
+  max_per_run: 50           # bounds a backlog flush after days of being off
+
+login:
+  # X credentials, used only when the persistent profile has been signed out.
+  # Same rule as the token: never here, always config.local.yaml or the env
+  # (FEED_ENGINE_X_USERNAME / FEED_ENGINE_X_PASSWORD).
+  #
+  # auto_login lets an unattended scheduled run sign itself back in. It is off
+  # by default on purpose: typing credentials is the single most likely thing
+  # here to trip X's automation checks, and the cost of tripping it is the
+  # account rather than the run. `-login` (signing in by hand, once) is the
+  # safer path and the one to prefer.
+  username: ""
+  password: ""
+  auto_login: false
+
 dedupe:
   recent_seeds: 200         # compare new seeds against this many recent rows
   theme_overlap: 0.6        # jaccard on theme_tags at/above this -> treat as duplicate

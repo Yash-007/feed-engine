@@ -8,7 +8,7 @@
 // Verified working: 2026-08-30. Bump Version when you edit anything below.
 package selectors
 
-const Version = "2026-08-30c"
+const Version = "2026-08-31a"
 
 // S is the selector set. Values are plain CSS, evaluated in page context.
 type Set struct {
@@ -40,6 +40,16 @@ type Set struct {
 	LoginForm  string
 	ErrorRetry string // "Something went wrong" retry button
 	EmptyState string // list with nothing in it
+
+	// The sign-in flow. Only the assisted-login path touches these, and it
+	// always degrades to "wait for a human" rather than failing the run, so
+	// drift here is a nuisance rather than an outage.
+	LoginUsername  string // step 1 field, also used for the phone/handle challenge
+	LoginPassword  string // step 2 field
+	LoginNext      string // "Next" after the username
+	LoginSubmit    string // "Log in" after the password
+	LoginChallenge string // the "enter your phone or username" interstitial
+	Login2FA       string // the verification-code field
 }
 
 // S is the live set. Everything reads from this.
@@ -71,6 +81,15 @@ var S = Set{
 		`input[name="text"][autocomplete^="username"]`,
 	ErrorRetry: `button[role="button"]:has-text("Retry")`,
 	EmptyState: `div[data-testid="empty_state_header_text"]`,
+
+	LoginUsername: `input[name="text"], input[autocomplete="username"]`,
+	LoginPassword: `input[name="password"], input[autocomplete="current-password"]`,
+	// Text-matched rather than testid-matched: X ships stable copy here and
+	// unstable testids, which is the opposite of the timeline.
+	LoginNext:      `button:has-text("Next"), div[role="button"]:has-text("Next")`,
+	LoginSubmit:    `button[data-testid="LoginForm_Login_Button"], div[role="button"]:has-text("Log in")`,
+	LoginChallenge: `input[data-testid="ocfEnterTextTextInput"]`,
+	Login2FA:       `input[data-testid="ocfEnterTextTextInput"][name="text"]`,
 }
 
 // TweetByID targets one post for an element screenshot.

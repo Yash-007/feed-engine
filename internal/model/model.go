@@ -2,7 +2,10 @@
 // a scraped Post and the IdeaSeed Claude distills out of it.
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Post is one tweet as read off the DOM. Nothing here is derived from an API.
 type Post struct {
@@ -38,10 +41,17 @@ type IdeaSeed struct {
 	ShelfLife        string    `json:"shelf_life"` // evergreen | timely
 	PostAuthor       string    `json:"post_author"`
 	PostText         string    `json:"post_text"`
-	SourcePostURL    string    `json:"source_post_url"`
-	SourcePostID     string    `json:"source_post_id"`
-	Visual           bool      `json:"visual"`
-	Status           string    `json:"status"`
+	// SourcePostURL is the live permalink. It is what makes a "repost" seed
+	// actionable weeks later (you cannot quote a post you cannot open) and
+	// what you follow to look at the image on a visual one, so it travels to
+	// the bank rather than staying local.
+	SourcePostURL string `json:"source_post_url"`
+	SourcePostID  string `json:"source_post_id"`
+	// Visual means the original carries an image, chart or video. Set from the
+	// post's media, not from whether this engine screenshotted it: the reader
+	// needs to know there is something to go and look at either way.
+	Visual bool   `json:"visual"`
+	Status string `json:"status"`
 }
 
 // SeedResponse is the shape Claude is told to emit: one object per kept post,
@@ -62,3 +72,29 @@ type SeedResponse struct {
 
 // SeedIDPrefix is prepended to a post id to form client_seed_id.
 const SeedIDPrefix = "harvest-"
+
+// CategoryRepost marks a seed whose best use is quoting the original post
+// rather than writing around it. Unlike every other category it depends on the
+// source post still being reachable, which is why SourcePostURL is not
+// optional for these.
+const CategoryRepost = "repost"
+
+// categories is the vocabulary the prompts are given. Kept here so a model slip
+// is caught once, on the way in, instead of becoming a phantom filter chip in
+// the app months later.
+var categories = map[string]bool{
+	"take": true, "shitpost": true, "banter": true,
+	"war_story": true, "thought": true, "trend": true,
+	CategoryRepost: true,
+}
+
+// NormalizeCategory lowercases a category and reports whether it is one we know.
+// An unknown one is returned empty: a seed is still worth banking without a
+// category, but a made-up one would spread through the theme tags and the UI.
+func NormalizeCategory(raw string) (string, bool) {
+	c := strings.ToLower(strings.TrimSpace(raw))
+	if c == "" || !categories[c] {
+		return "", false
+	}
+	return c, true
+}

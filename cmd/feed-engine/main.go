@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Yash-007/feed-engine/internal/bank"
 	"github.com/Yash-007/feed-engine/internal/claudecli"
 	"github.com/Yash-007/feed-engine/internal/config"
 	"github.com/Yash-007/feed-engine/internal/logx"
@@ -44,12 +45,12 @@ func main() {
 
 func run() error {
 	var (
-		cfgPath  = flag.String("config", "config.yaml", "path to config.yaml")
-		stage    = flag.String("stage", "all", "all | scrape | seed")
-		doLogin  = flag.Bool("login", false, "open the browser so the alt account can be signed in by hand, then exit")
-		noJitter = flag.Bool("no-jitter", false, "skip the random start delay")
-		debug    = flag.Bool("debug", false, "debug logging")
-		listFlag = flag.String("list", "", "scrape this list URL instead of the configured ones")
+		cfgPath   = flag.String("config", "config.yaml", "path to config.yaml")
+		stage     = flag.String("stage", "all", "all | scrape | seed")
+		doLogin   = flag.Bool("login", false, "open the browser so the alt account can be signed in by hand, then exit")
+		noJitter  = flag.Bool("no-jitter", false, "skip the random start delay")
+		debug     = flag.Bool("debug", false, "debug logging")
+		listFlag  = flag.String("list", "", "scrape this list URL instead of the configured ones")
 		loginWait = flag.Duration("login-timeout", 8*time.Minute,
 			"how long -login waits for the sign-in to land")
 	)
@@ -131,9 +132,17 @@ func run() error {
 	}
 
 	sent := append(append([]model.Post{}, textPosts...), visualPosts...)
-	seeds, unknown := assemble(responses, sent)
-	if unknown > 0 {
-		log.Warn("dropped seeds pointing at post ids we never sent", "n", unknown)
+	seeds, report := assemble(responses, sent)
+	if report.Unknown > 0 {
+		log.Warn("dropped seeds pointing at post ids we never sent", "n", report.Unknown)
+	}
+	if len(report.BadCategory) > 0 {
+		log.Warn("categories outside the prompt's vocabulary, blanked",
+			"values", report.BadCategory)
+	}
+	if report.Demoted > 0 {
+		log.Warn("repost seeds without a permalink, banked as takes instead",
+			"n", report.Demoted)
 	}
 
 	seeds, capped := capCategories(seeds, cfg.Dedupe.CategoryCap)
@@ -167,11 +176,63 @@ func run() error {
 		log.Error("could not save seen store", "err", err)
 	}
 
-	bank, _ := db.Count("new")
+	pushed := pushToBank(ctx, log, cfg, db)
+
+	bankTotal, _ := db.Count("new")
+	pending, _ := db.PendingCount()
 	log.Info("run complete",
 		"scraped", len(posts), "sent", len(sent), "seeds_new", ins.Inserted,
-		"bank_new_total", bank, "seen_ids", seenStore.Len())
+		"bank_new_total", bankTotal, "pushed", pushed, "awaiting_push", pending,
+		"seen_ids", seenStore.Len())
 	return nil
+}
+
+/*
+pushToBank drains the outbox to the Feed Runner backend.
+
+Runs after banking, never before: SQLite is the source of truth and a seed is
+only pushed once it is safely on disk, so a crash mid-push costs a retry rather
+than a seed. Every failure here is non-fatal to the run — the rows stay
+unstamped and the next run picks them up.
+*/
+func pushToBank(ctx context.Context, log *slog.Logger, cfg *config.Config, db *store.DB) int {
+	if !cfg.Bank.Enabled {
+		if n, _ := db.PendingCount(); n > 0 {
+			log.Info("bank push is off; seeds are banked locally only", "awaiting_push", n)
+		}
+		return 0
+	}
+
+	queued, err := db.Unposted(cfg.Bank.MaxPerRun)
+	if err != nil {
+		log.Error("could not read the push queue", "err", err)
+		return 0
+	}
+	if len(queued) == 0 {
+		return 0
+	}
+
+	client := bank.New(cfg.Bank, log)
+	// One cheap probe first. The free tier sleeps, and finding that out via
+	// fifty timed-out POSTs takes fifty minutes instead of one request.
+	if err := client.Health(ctx); err != nil {
+		log.Warn("backend is not answering, leaving seeds queued for the next run",
+			"queued", len(queued), "err", err)
+		return 0
+	}
+
+	res := client.Push(ctx, queued)
+	if err := db.MarkPosted(res.Delivered); err != nil {
+		// The seeds are on the server; failing to stamp them locally only means
+		// the next run re-pushes and the backend answers duplicate.
+		log.Error("pushed seeds but could not stamp them locally", "err", err)
+	}
+	log.Info("pushed to the bank",
+		"sent", res.Sent, "duplicate", res.Duplicate, "failed", res.Failed)
+	if res.Fatal != nil {
+		log.Error("push stopped early", "err", res.Fatal)
+	}
+	return res.Sent
 }
 
 // collect either scrapes the configured lists or, for -stage seed, reads back
@@ -259,10 +320,18 @@ func dedupe(in []model.Post) []model.Post {
 	return out
 }
 
+// assembled reports what had to be corrected on the way in, so a drifting
+// prompt shows up in the run log instead of quietly reshaping the bank.
+type assembled struct {
+	Unknown     int      // replies naming a post we never sent
+	BadCategory []string // categories outside the prompt's vocabulary
+	Demoted     int      // "repost" seeds with no permalink, downgraded to a take
+}
+
 // assemble turns Claude's replies back into bankable seeds, pairing each one
 // with the post it came from. A reply naming a post we never sent is dropped:
 // the model invented the id, and a seed with no source is worthless.
-func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, int) {
+func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, assembled) {
 	byID := make(map[string]model.Post, len(sent))
 	for _, p := range sent {
 		byID[p.ID] = p
@@ -270,7 +339,7 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, i
 
 	now := time.Now().UTC()
 	seeds := make([]model.IdeaSeed, 0, len(resp))
-	unknown := 0
+	var report assembled
 
 	for _, r := range resp {
 		// client_seed_id is "harvest-<post id>"; strip the prefix to find the
@@ -278,11 +347,23 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, i
 		postID := strings.TrimPrefix(strings.TrimSpace(r.ClientSeedID), model.SeedIDPrefix)
 		p, ok := byID[postID]
 		if !ok {
-			unknown++
+			report.Unknown++
 			continue
 		}
 		if strings.TrimSpace(r.Tension) == "" && strings.TrimSpace(r.AngleHint) == "" {
 			continue // nothing usable came back for this one
+		}
+
+		category, known := model.NormalizeCategory(r.Category)
+		if !known && strings.TrimSpace(r.Category) != "" {
+			report.BadCategory = append(report.BadCategory, r.Category)
+		}
+		// A quote post needs something to quote. If the permalink never made it
+		// off the DOM the seed is still worth banking, just not as a repost:
+		// left alone it would reach the app as an action with no target.
+		if category == model.CategoryRepost && p.URL == "" {
+			category = "take"
+			report.Demoted++
 		}
 
 		// The model is told to echo these, but the engine owns them: it knows the
@@ -302,8 +383,8 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, i
 			CapturedAtMillis: capturedMillis(p),
 			Source:           "harvest",
 			Platform:         "x",
-			Category:         r.Category,
-			ThemeTags:        r.ThemeTags,
+			Category:         category,
+			ThemeTags:        leadWithCategory(r.ThemeTags, category, r.Category),
 			Tension:          r.Tension,
 			AngleHint:        r.AngleHint,
 			ShelfLife:        r.ShelfLife,
@@ -311,11 +392,51 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, i
 			PostText:         truncate(text, 300),
 			SourcePostURL:    p.URL,
 			SourcePostID:     p.ID,
-			Visual:           p.HasVisual,
-			Status:           "new",
+			// Media, not "we screenshotted it": what the reader needs to know
+			// is that there is an image to go and look at before writing.
+			Visual: p.HasMedia,
+			Status: "new",
 		})
 	}
-	return seeds, unknown
+	return seeds, report
+}
+
+/*
+leadWithCategory keeps the first theme tag equal to the final category.
+
+The prompt is told to lead with it and the app filters on theme tags, so a
+category the engine corrected has to be corrected in the tags too, or the two
+disagree and a chip filters on a word the seed no longer claims.
+
+claimed is what the model said before correction. It is dropped separately from
+the known-category list because an invented category is not in that list: left
+alone, a rejected "hot_take" survives as an ordinary topic tag and becomes
+exactly the phantom filter chip that rejecting it was supposed to prevent.
+*/
+func leadWithCategory(tags []string, category, claimed string) []string {
+	rest := make([]string, 0, len(tags)+1)
+	for _, t := range tags {
+		trimmed := strings.TrimSpace(t)
+		switch {
+		case trimmed == "":
+		case strings.EqualFold(trimmed, category):
+		case strings.EqualFold(trimmed, strings.TrimSpace(claimed)):
+		case isCategoryWord(trimmed):
+		default:
+			rest = append(rest, trimmed)
+		}
+	}
+	if category == "" {
+		return rest
+	}
+	return append([]string{category}, rest...)
+}
+
+// isCategoryWord spots a stale category left in the tag list after a
+// correction, so it does not survive as an ordinary topic tag.
+func isCategoryWord(tag string) bool {
+	_, known := model.NormalizeCategory(tag)
+	return known
 }
 
 // capCategories enforces the per-category cap across the whole run. The prompt
@@ -412,4 +533,3 @@ func loadPosts(path string) ([]model.Post, error) {
 	}
 	return posts, nil
 }
-

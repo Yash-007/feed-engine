@@ -63,6 +63,42 @@ type Dedupe struct {
 	CategoryCap  int     `yaml:"category_cap"`
 }
 
+// Bank is the Feed Runner backend the harvested seeds are pushed to.
+//
+// Disabled by default and by absence of a token: this is the one outbound write
+// in an otherwise read-only tool, and it writes into a live personal account,
+// so it has to be turned on deliberately rather than by forgetting to turn it
+// off. The local SQLite bank is written either way, so nothing is lost while
+// it is off.
+type Bank struct {
+	Enabled bool   `yaml:"enabled"`
+	BaseURL string `yaml:"base_url"`
+	// Token is a session token from the app ("fr_" + 64 hex). Keep it out of
+	// config.yaml, which is committed: put it in config.local.yaml, or leave it
+	// empty and export FEED_ENGINE_BANK_TOKEN instead.
+	Token      string `yaml:"token"`
+	TimeoutSec int    `yaml:"timeout_sec"`
+	// MaxPerRun bounds a backlog flush, so a month of unpushed seeds does not
+	// become one enormous burst at the free tier.
+	MaxPerRun int `yaml:"max_per_run"`
+}
+
+// Login holds the X credentials used to sign the harvesting account in when the
+// profile's session has lapsed.
+//
+// Same rule as the bank token: never in config.yaml. Leaving these empty is the
+// supported path, and the safer one, since -login lets you sign in by hand
+// once into the persistent profile and X is markedly less suspicious of that.
+type Login struct {
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// AutoLogin lets a scheduled run type the credentials in when it finds the
+	// profile signed out. Off by default: an unattended login is the single
+	// most likely thing here to trip X's automation checks, and the cost of
+	// tripping it is the account, not the run.
+	AutoLogin bool `yaml:"auto_login"`
+}
+
 type Config struct {
 	ListURLs    []string  `yaml:"list_urls"`
 	RotateLists bool      `yaml:"rotate_lists"`
@@ -72,6 +108,8 @@ type Config struct {
 	Prefilter   Prefilter `yaml:"prefilter"`
 	Claude      Claude    `yaml:"claude"`
 	Dedupe      Dedupe    `yaml:"dedupe"`
+	Bank        Bank      `yaml:"bank"`
+	Login       Login     `yaml:"login"`
 }
 
 // Load reads path, then overlays <dir>/config.local.yaml if it exists.
@@ -87,7 +125,32 @@ func Load(path string) (*Config, error) {
 		}
 	}
 	c.expand()
+	c.applyEnv()
 	return c, c.validate()
+}
+
+/*
+applyEnv lets the two secrets stay out of every file on disk.
+
+config.yaml is committed and config.local.yaml is only gitignored, which is one
+`git add -f` away from being a mistake. An environment variable is the option
+that leaves no copy behind, so it wins over both files when set.
+*/
+func (c *Config) applyEnv() {
+	for _, o := range []struct {
+		key  string
+		into *string
+	}{
+		{"FEED_ENGINE_BANK_TOKEN", &c.Bank.Token},
+		{"FEED_ENGINE_X_USERNAME", &c.Login.Username},
+		{"FEED_ENGINE_X_PASSWORD", &c.Login.Password},
+	} {
+		if v := strings.TrimSpace(os.Getenv(o.key)); v != "" {
+			*o.into = v
+		}
+	}
+	c.Bank.Token = strings.TrimSpace(c.Bank.Token)
+	c.Bank.BaseURL = strings.TrimRight(strings.TrimSpace(c.Bank.BaseURL), "/")
 }
 
 func decodeInto(path string, c *Config) error {
@@ -127,6 +190,11 @@ func defaults() *Config {
 			TextPrompt: "./prompts/filter_and_seed.md", VisualPrompt: "./prompts/filter_and_seed_visual.md",
 		},
 		Dedupe: Dedupe{RecentSeeds: 200, ThemeOverlap: 0.6, CategoryCap: 4},
+		Bank: Bank{
+			BaseURL:    "https://feed-runner-backend.onrender.com",
+			TimeoutSec: 60,
+			MaxPerRun:  50,
+		},
 	}
 }
 
@@ -165,6 +233,22 @@ func (c *Config) validate() error {
 	}
 	if c.Session.MaxPosts <= 0 || c.Session.MaxMinutes <= 0 {
 		return fmt.Errorf("max_posts and max_minutes must be > 0")
+	}
+	// Fail at startup rather than on every seed: a push loop that 401s once per
+	// row looks like a backend outage in the log and is really a missing token.
+	if c.Bank.Enabled {
+		if c.Bank.Token == "" {
+			return fmt.Errorf("bank.enabled is true but no token: put it in " +
+				"config.local.yaml as bank.token, or export FEED_ENGINE_BANK_TOKEN")
+		}
+		if c.Bank.BaseURL == "" {
+			return fmt.Errorf("bank.enabled is true but bank.base_url is empty")
+		}
+	}
+	if c.Login.AutoLogin && (c.Login.Username == "" || c.Login.Password == "") {
+		return fmt.Errorf("login.auto_login is true but the credentials are empty: " +
+			"set login.username/login.password in config.local.yaml, or export " +
+			"FEED_ENGINE_X_USERNAME/FEED_ENGINE_X_PASSWORD")
 	}
 	return nil
 }

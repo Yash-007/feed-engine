@@ -148,6 +148,15 @@ func Login(ctx context.Context, log *slog.Logger, cfg *config.Config, timeout ti
 		return nil
 	}
 
+	// Fill what we can, then fall through to watching. Deliberately not
+	// "automate the login": X puts a phone/handle challenge or a 2FA code in
+	// front of a fresh session often enough that pretending otherwise would
+	// just fail confusingly. Typing the two fields saves the boring part, and
+	// a human finishes anything X asks for.
+	if s.fillCredentials(ctx) {
+		log.Info("filled the sign-in form; finish anything X asks for (code, challenge) in the window")
+	}
+
 	log.Info("browser open — sign the alt account in by hand; this will notice and exit on its own",
 		"giving_up_after", timeout)
 
@@ -169,6 +178,84 @@ func Login(ctx context.Context, log *slog.Logger, cfg *config.Config, timeout ti
 		return nil
 	}
 	return fmt.Errorf("gave up after %s without seeing a signed-in session", timeout)
+}
+
+/*
+fillCredentials types the configured username and password into X's sign-in
+flow, and reports whether it got as far as submitting the password.
+
+It never asserts success. X interleaves a phone/handle challenge and a 2FA code
+into this flow unpredictably, especially for a session it has not seen before,
+and there is no reliable way to tell "wrong password" from "prove it's you"
+without reading copy that changes. So every step is best-effort, and the caller
+decides what to do next by watching for a real session rather than by trusting
+a return value.
+
+Credentials are read from config at call time and never logged.
+*/
+func (s *session) fillCredentials(ctx context.Context) bool {
+	user := strings.TrimSpace(s.cfg.Login.Username)
+	pass := s.cfg.Login.Password
+	if user == "" || pass == "" {
+		return false
+	}
+
+	// Step 1: the handle. Absent means X is showing something other than the
+	// first step, which a human is better placed to deal with.
+	if !s.fillFirst(selectors.S.LoginUsername, user) {
+		return false
+	}
+	s.clickFirst(selectors.S.LoginNext)
+	sleepCtx(ctx, 2*time.Second)
+
+	// X sometimes asks for the handle again ("enter your phone number or
+	// username") when it does not recognise the device. Same answer.
+	if n, _ := s.page.Locator(selectors.S.LoginChallenge).Count(); n > 0 {
+		s.log.Info("X asked to confirm the account, answering with the username")
+		s.fillFirst(selectors.S.LoginChallenge, user)
+		s.clickFirst(selectors.S.LoginNext)
+		sleepCtx(ctx, 2*time.Second)
+	}
+
+	if !s.fillFirst(selectors.S.LoginPassword, pass) {
+		return false
+	}
+	s.clickFirst(selectors.S.LoginSubmit)
+	sleepCtx(ctx, 3*time.Second)
+	return true
+}
+
+// fillFirst types into the first match, reporting whether it was there. Short
+// timeout: this whole path is opportunistic and must not stall a run.
+func (s *session) fillFirst(selector, value string) bool {
+	loc := s.page.Locator(selector).First()
+	if err := loc.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(8000),
+	}); err != nil {
+		return false
+	}
+	// Typed with a delay rather than set: X watches for values appearing in an
+	// input with no keystrokes behind them.
+	if err := loc.Type(value, playwright.LocatorTypeOptions{
+		Delay: playwright.Float(60),
+	}); err != nil {
+		s.log.Debug("could not type into the sign-in field", "err", err)
+		return false
+	}
+	return true
+}
+
+func (s *session) clickFirst(selector string) {
+	loc := s.page.Locator(selector).First()
+	if err := loc.Click(playwright.LocatorClickOptions{
+		Timeout: playwright.Float(8000),
+	}); err != nil {
+		// Enter submits both steps of this form, so a missed button is
+		// recoverable rather than terminal.
+		s.log.Debug("sign-in button not clickable, pressing Enter", "err", err)
+		s.page.Keyboard().Press("Enter")
+	}
 }
 
 // settle waits for X's client-side render to produce either the timeline or the
@@ -223,7 +310,21 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 	}
 
 	if s.loggedOut() {
-		return res, fmt.Errorf("profile is logged out — run with -login and sign the alt account in once")
+		// An unattended run can try to sign itself back in, but only when told
+		// to: this is the one place the engine types credentials with nobody
+		// watching, and a challenge it cannot answer leaves a half-finished
+		// login on screen. Off by default, and it still gives up rather than
+		// retrying, so a wrong password costs one attempt and not an account.
+		if !s.cfg.Login.AutoLogin {
+			return res, fmt.Errorf("profile is logged out — run with -login and sign the alt account in once")
+		}
+		s.log.Warn("profile is logged out, attempting the configured sign-in")
+		s.fillCredentials(ctx)
+		if err := s.settle(); err != nil || s.loggedOut() {
+			return res, fmt.Errorf("automatic sign-in did not take (X likely asked for a " +
+				"code or a challenge) — run with -login and finish it by hand once")
+		}
+		s.log.Info("signed back in")
 	}
 
 	if n, _ := s.page.Locator(selectors.S.Tweet).Count(); n == 0 {

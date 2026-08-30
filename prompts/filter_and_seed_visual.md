@@ -60,7 +60,7 @@ Each element is a ready-to-store seed in the idea bank's wire format:
     "platform": "x",
     "post_author": "@handle",
     "post_text": "the post's core text verbatim; for a chart or infographic, a one-line factual description of what it shows. At most 300 characters.",
-    "category": "take | shitpost | banter | war_story | thought | trend",
+    "category": "take | shitpost | banter | war_story | thought | trend | repost",
     "theme_tags": ["<category>", "then 2-4 short lowercase topic tags"],
     "tension": "one line: the generalizable interesting thing, stated so it's useful weeks later WITHOUT the original post",
     "angle_hint": "one line: the take Yash could build from his production/insider view — not a repeat of the tension",
@@ -92,6 +92,9 @@ Field notes:
   rewrite it.
 - `angle_hint` is Yash's insider entry point — the take HE could build from
   inside Indian fintech and backend engineering — distinct from the tension.
+  On a `repost` seed this means something narrower: the LAYER he would put
+  above the quoted post, in one line, written for a reader who can already see
+  the original image.
 - `category` = the kind of post this seed could become (pick the strongest fit):
   - **take** — an opinion/insight post
   - **shitpost** — absurd/ironic, played for laughs, no lesson
@@ -99,6 +102,26 @@ Field notes:
   - **war_story** — a "this happened" moment from production/work life
   - **thought** — a plain human observation or reflection, said simply
   - **trend** — timely news/event worth reacting to fast
+  - **repost** — the post is worth QUOTE-TWEETING rather than writing around.
+    See below; this one has a higher bar than the rest.
+- **`repost` is the exception to "transform, never copy".** Every other category
+  produces a standalone post that must not read as the original reworded. A
+  repost seed is different: Yash will quote-tweet the original, so it stays
+  visible next to his line and the reader sees both. A chart or a striking data
+  image is often the best possible quote, because the image does the arguing
+  and his line only has to add the view from inside. Pick it only when ALL of
+  these hold:
+  1. Yash can add a real layer on top — the inside view from Indian fintech or
+     backend engineering, what it misses, the second-order effect, or the joke
+     it sets up. If his line would just agree, it is not a repost.
+  2. The image is legible and stands on its own to his audience. A chart you
+     had to squint at will be worse for everyone else.
+  3. It is punching up or sideways: a big account, a strong data point, a
+     well-made argument. NEVER a small account, a junior, someone's honest
+     work, or anything that would read as dunking on a person.
+  4. It is not a reply inside someone else's thread.
+  When in doubt between `repost` and `take`, choose `take`: a standalone post
+  costs nothing if it is wrong, and a bad quote tweet is public.
 - **Category caps per batch: max 3-4 seeds per category.** Once a category has
   3-4 strong seeds, skip weaker posts that would land in it, even if decent.
   This forces variety across the bank instead of 20 takes and no jokes. Prefer a
