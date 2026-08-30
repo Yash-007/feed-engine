@@ -46,7 +46,7 @@ func main() {
 func run() error {
 	var (
 		cfgPath   = flag.String("config", "config.yaml", "path to config.yaml")
-		stage     = flag.String("stage", "all", "all | scrape | seed")
+		stage     = flag.String("stage", "all", "all | scrape | seed | push")
 		doLogin   = flag.Bool("login", false, "open the browser so the alt account can be signed in by hand, then exit")
 		noJitter  = flag.Bool("no-jitter", false, "skip the random start delay")
 		debug     = flag.Bool("debug", false, "debug logging")
@@ -57,9 +57,9 @@ func run() error {
 	flag.Parse()
 
 	switch *stage {
-	case "all", "scrape", "seed":
+	case "all", "scrape", "seed", "push":
 	default:
-		return fmt.Errorf("unknown -stage %q (want all, scrape or seed)", *stage)
+		return fmt.Errorf("unknown -stage %q (want all, scrape, seed or push)", *stage)
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -84,6 +84,27 @@ func run() error {
 	}
 
 	log.Info("feed-engine starting", "stage", *stage, "selectors", selectors.Version, "pid", os.Getpid())
+
+	// Drain the outbox and stop. No browser, no model calls: this is how you
+	// retry a push that failed because the backend was asleep, without paying
+	// to harvest the same feed again.
+	if *stage == "push" {
+		db, err := store.Open(cfg.Paths.DB)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+
+		if !cfg.Bank.Enabled {
+			pending, _ := db.PendingCount()
+			return fmt.Errorf("bank.enabled is false, so there is nothing to push to "+
+				"(%d seeds are waiting locally)", pending)
+		}
+		pushed := pushToBank(ctx, log, cfg, db)
+		pending, _ := db.PendingCount()
+		log.Info("push stage done", "pushed", pushed, "awaiting_push", pending)
+		return nil
+	}
 
 	// A corrupt store comes back empty with an error attached — worth a warning,
 	// not worth killing the run over.
