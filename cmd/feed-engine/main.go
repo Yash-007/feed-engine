@@ -6,7 +6,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -51,6 +50,8 @@ func run() error {
 		noJitter = flag.Bool("no-jitter", false, "skip the random start delay")
 		debug    = flag.Bool("debug", false, "debug logging")
 		listFlag = flag.String("list", "", "scrape this list URL instead of the configured ones")
+		loginWait = flag.Duration("login-timeout", 8*time.Minute,
+			"how long -login waits for the sign-in to land")
 	)
 	flag.Parse()
 
@@ -74,12 +75,12 @@ func run() error {
 	}
 	defer closer.Close()
 
-	if *doLogin {
-		return scraper.Login(log, cfg, waitForEnter)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if *doLogin {
+		return scraper.Login(ctx, log, cfg, *loginWait)
+	}
 
 	log.Info("feed-engine starting", "stage", *stage, "selectors", selectors.Version, "pid", os.Getpid())
 
@@ -324,11 +325,6 @@ func startJitter(ctx context.Context, log *slog.Logger, maxSec int) {
 	}
 }
 
-func waitForEnter() {
-	fmt.Fprintln(os.Stderr, "\n>>> sign the alt account in in the browser window, then press Enter here <<<")
-	bufio.NewReader(os.Stdin).ReadString('\n')
-}
-
 func savePosts(path string, posts []model.Post) error {
 	b, err := json.MarshalIndent(posts, "", "  ")
 	if err != nil {
@@ -355,3 +351,4 @@ func loadPosts(path string) ([]model.Post, error) {
 	}
 	return posts, nil
 }
+

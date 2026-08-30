@@ -73,7 +73,17 @@ func start(log *slog.Logger, cfg *config.Config) (*session, error) {
 	opts := playwright.BrowserTypeLaunchPersistentContextOptions{
 		Headless: playwright.Bool(cfg.Browser.Headless),
 		Viewport: &playwright.Size{Width: cfg.Browser.ViewportWidth, Height: cfg.Browser.ViewportHeight},
-		Args:     []string{"--disable-blink-features=AutomationControlled"},
+		// Pin to the top-left so a headed window can't open part-way off the
+		// desktop and hide the bottom of the page.
+		Args: []string{
+			"--disable-blink-features=AutomationControlled",
+			"--window-position=0,0",
+		},
+		// Playwright adds --enable-automation by default, which sets
+		// navigator.webdriver and shows the "controlled by automated software"
+		// infobar. X treats that as a bot signal and can stall the sign-in flow,
+		// so drop it. Read-only scrolling is unaffected either way.
+		IgnoreDefaultArgs: []string{"--enable-automation"},
 	}
 	if cfg.Browser.Channel != "" {
 		opts.Channel = playwright.String(cfg.Browser.Channel)
@@ -81,7 +91,14 @@ func start(log *slog.Logger, cfg *config.Config) (*session, error) {
 	bctx, err := pw.Chromium.LaunchPersistentContext(cfg.Browser.ProfileDir, opts)
 	if err != nil {
 		pw.Stop()
-		return nil, fmt.Errorf("launch persistent context (profile %s): %w", cfg.Browser.ProfileDir, err)
+		// "target closed" right after <launched> almost always means another
+		// Chrome still holds this profile. A failed launch leaves its browser
+		// running, so one failure locks the profile and every later run fails the
+		// same way until the stray processes are killed.
+		return nil, fmt.Errorf("launch persistent context (profile %s): %w\n"+
+			"if Chrome exited immediately, a stray Chrome is probably still holding the profile — kill any\n"+
+			"chrome.exe whose command line contains %s, then retry",
+			cfg.Browser.ProfileDir, err, cfg.Browser.ProfileDir)
 	}
 	bctx.SetDefaultTimeout(float64(cfg.Browser.NavTimeoutMS))
 
@@ -106,30 +123,52 @@ func (s *session) close() {
 	}
 }
 
-// Login opens x.com so the alt account can be signed in by hand. The script
-// never sees a username or password; it only holds the window open.
-func Login(log *slog.Logger, cfg *config.Config, wait func()) error {
+// Login opens x.com so the alt account can be signed in by hand, then watches
+// the page until the session appears. The script never sees a username or
+// password; it only holds the window open and polls.
+//
+// It watches rather than waiting on a keypress so it works with no console
+// attached — under a scheduler, or driven by another process whose stdin is
+// closed, where a read would return EOF instantly and close the browser.
+func Login(ctx context.Context, log *slog.Logger, cfg *config.Config, timeout time.Duration) error {
 	s, err := start(log, cfg)
 	if err != nil {
 		return err
 	}
 	defer s.close()
+
 	if _, err := s.page.Goto("https://x.com/home", playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 	}); err != nil {
 		return fmt.Errorf("goto x.com: %w", err)
 	}
-	log.Info("browser open — log the alt account in by hand, then press Enter here")
-	wait()
-	switch err := s.settle(); {
-	case err != nil:
-		log.Warn("page never settled, cannot tell whether the session took", "err", err)
-	case s.loggedOut():
-		log.Warn("still looks logged out; the profile may not have a session")
-	default:
-		log.Info("session looks good", "profile", cfg.Browser.ProfileDir)
+
+	if err := s.settle(); err == nil && !s.loggedOut() {
+		log.Info("already signed in, nothing to do", "profile", cfg.Browser.ProfileDir)
+		return nil
 	}
-	return nil
+
+	log.Info("browser open — sign the alt account in by hand; this will notice and exit on its own",
+		"giving_up_after", timeout)
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !sleepCtx(ctx, 3*time.Second) {
+			return ctx.Err()
+		}
+		if err := s.settle(); err != nil {
+			continue // mid-navigation, neither timeline nor form is mounted
+		}
+		if s.loggedOut() {
+			continue
+		}
+		// Give the browser a moment to flush the session cookies into the
+		// profile directory before the context closes underneath it.
+		sleepCtx(ctx, 3*time.Second)
+		log.Info("session detected and saved", "profile", cfg.Browser.ProfileDir)
+		return nil
+	}
+	return fmt.Errorf("gave up after %s without seeing a signed-in session", timeout)
 }
 
 // settle waits for X's client-side render to produce either the timeline or the
@@ -244,7 +283,9 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 
 // harvest reads the mounted posts once and appends the new ones.
 func (s *session) harvest(res *Result, seenRun map[string]bool, want WantShot) (int, error) {
-	arg := map[string]string{
+	// map[string]any, not map[string]string: playwright-go's argument serializer
+	// only handles the former and panics outright on the latter.
+	arg := map[string]any{
 		"tweet": selectors.S.Tweet, "text": selectors.S.Text, "time": selectors.S.Time,
 		"permalink": selectors.S.PermalinkAnc, "username": selectors.S.UserName,
 		"social": selectors.S.SocialContext, "photo": selectors.S.Photo,
