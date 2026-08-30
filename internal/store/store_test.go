@@ -27,9 +27,10 @@ func TestJaccard(t *testing.T) {
 
 func seed(id string, tags ...string) model.IdeaSeed {
 	return model.IdeaSeed{
-		ID: id, CreatedAt: time.Now().UTC(), Category: "insight", ThemeTags: tags,
+		ID: id, CreatedAt: time.Now().UTC(), CapturedAtMillis: 1735689600000,
+		Source: "harvest", Platform: "x", Category: "take", ThemeTags: tags,
 		Tension: "t", AngleHint: "a", ShelfLife: "evergreen",
-		SourceType: "engine", SourceAuthor: "someone", SourcePostID: "post-" + id,
+		PostAuthor: "@someone", PostText: "the post", SourcePostID: "post-" + id,
 		Status: "new",
 	}
 }

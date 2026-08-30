@@ -14,28 +14,48 @@ import (
 	"github.com/Yash-007/feed-engine/internal/model"
 )
 
+// id holds client_seed_id ("harvest-<post id>"), so re-harvesting the same post
+// collides on the primary key instead of banking a second copy.
 const schema = `
 CREATE TABLE IF NOT EXISTS idea_seeds (
-  id               TEXT PRIMARY KEY,
-  created_at       TEXT NOT NULL,
-  category         TEXT,
-  theme_tags       TEXT,          -- JSON array
-  tension          TEXT,
-  angle_hint       TEXT,
-  shelf_life       TEXT,
-  source_type      TEXT NOT NULL DEFAULT 'engine',
-  source_author    TEXT,
-  source_post_text TEXT,
-  source_post_url  TEXT,
-  source_post_id   TEXT,
-  visual           INTEGER NOT NULL DEFAULT 0,
-  status           TEXT NOT NULL DEFAULT 'new'
+  id                 TEXT PRIMARY KEY,
+  created_at         TEXT NOT NULL,
+  captured_at_millis INTEGER NOT NULL DEFAULT 0,
+  source             TEXT NOT NULL DEFAULT 'harvest',
+  platform           TEXT NOT NULL DEFAULT 'x',
+  category           TEXT,
+  theme_tags         TEXT,          -- JSON array, category first
+  tension            TEXT,
+  angle_hint         TEXT,
+  shelf_life         TEXT,
+  post_author        TEXT,
+  post_text          TEXT,
+  source_post_url    TEXT,
+  source_post_id     TEXT,
+  visual             INTEGER NOT NULL DEFAULT 0,
+  status             TEXT NOT NULL DEFAULT 'new'
 );
 CREATE INDEX IF NOT EXISTS idx_seeds_created ON idea_seeds(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_seeds_status  ON idea_seeds(status);
+CREATE INDEX IF NOT EXISTS idx_seeds_category ON idea_seeds(category);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_seeds_post ON idea_seeds(source_post_id)
   WHERE source_post_id IS NOT NULL AND source_post_id <> '';
 `
+
+// migrations bring a bank created by the older schema up to the wire format.
+// CREATE TABLE IF NOT EXISTS silently does nothing to an existing table, so the
+// added columns have to be applied by hand; "duplicate column" just means the
+// migration already ran.
+var migrations = []string{
+	`ALTER TABLE idea_seeds ADD COLUMN captured_at_millis INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE idea_seeds ADD COLUMN source TEXT NOT NULL DEFAULT 'harvest'`,
+	`ALTER TABLE idea_seeds ADD COLUMN platform TEXT NOT NULL DEFAULT 'x'`,
+	`ALTER TABLE idea_seeds ADD COLUMN post_author TEXT`,
+	`ALTER TABLE idea_seeds ADD COLUMN post_text TEXT`,
+	// Carry the old column values across, where the old columns still exist.
+	`UPDATE idea_seeds SET post_author = source_author WHERE post_author IS NULL`,
+	`UPDATE idea_seeds SET post_text = source_post_text WHERE post_text IS NULL`,
+}
 
 type DB struct{ sql *sql.DB }
 
@@ -48,6 +68,13 @@ func Open(path string) (*DB, error) {
 	if _, err := h.Exec(schema); err != nil {
 		h.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+	// Best effort: every one of these fails harmlessly on a bank that already has
+	// the column, and there is nothing to migrate on a fresh file.
+	for _, m := range migrations {
+		if _, err := h.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			continue
+		}
 	}
 	return &DB{sql: h}, nil
 }
@@ -82,9 +109,10 @@ func (d *DB) Insert(seeds []model.IdeaSeed, recentN int, overlap float64) (Inser
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO idea_seeds
-	 (id, created_at, category, theme_tags, tension, angle_hint, shelf_life,
-	  source_type, source_author, source_post_text, source_post_url, source_post_id, visual, status)
-	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	 (id, created_at, captured_at_millis, source, platform, category, theme_tags,
+	  tension, angle_hint, shelf_life, post_author, post_text,
+	  source_post_url, source_post_id, visual, status)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return res, err
 	}
@@ -99,9 +127,10 @@ func (d *DB) Insert(seeds []model.IdeaSeed, recentN int, overlap float64) (Inser
 
 		raw, _ := json.Marshal(tags)
 		out, err := stmt.Exec(
-			s.ID, s.CreatedAt.UTC().Format(time.RFC3339), s.Category, string(raw),
-			s.Tension, s.AngleHint, s.ShelfLife, s.SourceType, s.SourceAuthor,
-			s.SourcePostText, s.SourcePostURL, s.SourcePostID, boolInt(s.Visual), s.Status,
+			s.ID, s.CreatedAt.UTC().Format(time.RFC3339), s.CapturedAtMillis,
+			s.Source, s.Platform, s.Category, string(raw),
+			s.Tension, s.AngleHint, s.ShelfLife, s.PostAuthor, s.PostText,
+			s.SourcePostURL, s.SourcePostID, boolInt(s.Visual), s.Status,
 		)
 		if err != nil {
 			return res, fmt.Errorf("insert seed %s: %w", s.ID, err)

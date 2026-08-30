@@ -114,8 +114,8 @@ func run() error {
 	textPosts, visualPosts, st := filter.Apply(posts)
 	log.Info("prefilter",
 		"in", st.In, "kept", st.Kept, "text", st.KeptText, "visual", st.KeptShots,
-		"promoted", st.Promoted, "too_short", st.TooShort, "no_text", st.NoText,
-		"already_seen", st.Seen)
+		"own", st.Own, "promoted", st.Promoted, "too_short", st.TooShort,
+		"no_text", st.NoText, "already_seen", st.Seen)
 
 	cc := claudecli.New(cfg.Claude, log)
 	var responses []model.SeedResponse
@@ -134,6 +134,11 @@ func run() error {
 	seeds, unknown := assemble(responses, sent)
 	if unknown > 0 {
 		log.Warn("dropped seeds pointing at post ids we never sent", "n", unknown)
+	}
+
+	seeds, capped := capCategories(seeds, cfg.Dedupe.CategoryCap)
+	if len(capped) > 0 {
+		log.Info("category cap applied across the run", "cap", cfg.Dedupe.CategoryCap, "dropped", capped)
 	}
 
 	db, err := store.Open(cfg.Paths.DB)
@@ -268,10 +273,10 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, i
 	unknown := 0
 
 	for _, r := range resp {
-		if r.Skip {
-			continue
-		}
-		p, ok := byID[r.PostID]
+		// client_seed_id is "harvest-<post id>"; strip the prefix to find the
+		// post. A reply naming a post we never sent is dropped.
+		postID := strings.TrimPrefix(strings.TrimSpace(r.ClientSeedID), model.SeedIDPrefix)
+		p, ok := byID[postID]
 		if !ok {
 			unknown++
 			continue
@@ -279,24 +284,80 @@ func assemble(resp []model.SeedResponse, sent []model.Post) ([]model.IdeaSeed, i
 		if strings.TrimSpace(r.Tension) == "" && strings.TrimSpace(r.AngleHint) == "" {
 			continue // nothing usable came back for this one
 		}
+
+		// The model is told to echo these, but the engine owns them: it knows the
+		// real handle, url and timestamp, and must not bank an invented one.
+		author := strings.TrimSpace(r.PostAuthor)
+		if author == "" {
+			author = "@" + p.Author
+		}
+		text := strings.TrimSpace(r.PostText)
+		if text == "" {
+			text = p.Text
+		}
+
 		seeds = append(seeds, model.IdeaSeed{
-			ID:             "seed_" + p.ID,
-			CreatedAt:      now,
-			Category:       r.Category,
-			ThemeTags:      r.ThemeTags,
-			Tension:        r.Tension,
-			AngleHint:      r.AngleHint,
-			ShelfLife:      r.ShelfLife,
-			SourceType:     "engine",
-			SourceAuthor:   p.Author,
-			SourcePostText: p.Text,
-			SourcePostURL:  p.URL,
-			SourcePostID:   p.ID,
-			Visual:         p.HasVisual,
-			Status:         "new",
+			ID:               model.SeedIDPrefix + p.ID,
+			CreatedAt:        now,
+			CapturedAtMillis: capturedMillis(p),
+			Source:           "harvest",
+			Platform:         "x",
+			Category:         r.Category,
+			ThemeTags:        r.ThemeTags,
+			Tension:          r.Tension,
+			AngleHint:        r.AngleHint,
+			ShelfLife:        r.ShelfLife,
+			PostAuthor:       author,
+			PostText:         truncate(text, 300),
+			SourcePostURL:    p.URL,
+			SourcePostID:     p.ID,
+			Visual:           p.HasVisual,
+			Status:           "new",
 		})
 	}
 	return seeds, unknown
+}
+
+// capCategories enforces the per-category cap across the whole run. The prompt
+// caps categories per model call, but a run makes several calls — text batches
+// plus vision batches — so without this the variety rule holds inside each batch
+// and quietly fails across the run: six text batches could bank 24 "take" seeds
+// and nothing else. Keeps the first n of each category, in the order returned.
+func capCategories(seeds []model.IdeaSeed, n int) ([]model.IdeaSeed, map[string]int) {
+	dropped := map[string]int{}
+	if n <= 0 {
+		return seeds, dropped
+	}
+	count := map[string]int{}
+	out := make([]model.IdeaSeed, 0, len(seeds))
+	for _, s := range seeds {
+		if count[s.Category] >= n {
+			dropped[s.Category]++
+			continue
+		}
+		count[s.Category]++
+		out = append(out, s)
+	}
+	return out, dropped
+}
+
+// capturedMillis is the post's own timestamp in unix millis. The model has no
+// reliable clock, so the engine fills this in. Falls back to scrape time.
+func capturedMillis(p model.Post) int64 {
+	if t, err := time.Parse(time.RFC3339, p.Timestamp); err == nil {
+		return t.UnixMilli()
+	}
+	return p.ScrapedAt.UnixMilli()
+}
+
+// truncate cuts to n runes, not bytes, so a multi-byte character can't be split
+// in half and land in the bank as a replacement glyph.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n]))
 }
 
 func logHealth(log *slog.Logger, h *selectors.Health) {

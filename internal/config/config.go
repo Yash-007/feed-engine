@@ -40,9 +40,10 @@ type Paths struct {
 }
 
 type Prefilter struct {
-	MinWords          int `yaml:"min_words"`
-	VisualMaxWords    int `yaml:"visual_max_words"`
-	SeenRetentionDays int `yaml:"seen_retention_days"`
+	MinWords          int    `yaml:"min_words"`
+	VisualMaxWords    int    `yaml:"visual_max_words"`
+	SeenRetentionDays int    `yaml:"seen_retention_days"`
+	OwnHandle         string `yaml:"own_handle"`
 }
 
 type Claude struct {
@@ -59,6 +60,7 @@ type Claude struct {
 type Dedupe struct {
 	RecentSeeds  int     `yaml:"recent_seeds"`
 	ThemeOverlap float64 `yaml:"theme_overlap"`
+	CategoryCap  int     `yaml:"category_cap"`
 }
 
 type Config struct {
@@ -118,11 +120,13 @@ func defaults() *Config {
 			Log: "./data/run.log",
 		},
 		Prefilter: Prefilter{MinWords: 10, VisualMaxWords: 15, SeenRetentionDays: 90},
+		// OwnHandle intentionally has no default: guessing a handle would
+		// silently drop a real author's posts.
 		Claude: Claude{
 			Bin: "claude", TextBatchSize: 25, VisualBatchSize: 4, TimeoutSec: 300,
 			TextPrompt: "./prompts/filter_and_seed.md", VisualPrompt: "./prompts/filter_and_seed_visual.md",
 		},
-		Dedupe: Dedupe{RecentSeeds: 200, ThemeOverlap: 0.6},
+		Dedupe: Dedupe{RecentSeeds: 200, ThemeOverlap: 0.6, CategoryCap: 4},
 	}
 }
 

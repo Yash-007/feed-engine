@@ -37,11 +37,10 @@ func New(cfg config.Claude, log *slog.Logger) *Client { return &Client{cfg: cfg,
 // postIn is the trimmed view of a post that goes over stdin. Sending the full
 // struct would waste tokens on fields the prompt has no use for.
 type postIn struct {
-	PostID    string `json:"post_id"`
+	ID        string `json:"id"`
 	Author    string `json:"author"`
 	Text      string `json:"text"`
 	Timestamp string `json:"timestamp"`
-	WordCount int    `json:"word_count"`
 	ImagePath string `json:"image_path,omitempty"`
 }
 
@@ -49,8 +48,7 @@ func trim(posts []model.Post, withImage bool) []postIn {
 	out := make([]postIn, 0, len(posts))
 	for _, p := range posts {
 		in := postIn{
-			PostID: p.ID, Author: p.Author, Text: p.Text,
-			Timestamp: p.Timestamp, WordCount: p.WordCount,
+			ID: p.ID, Author: p.Author, Text: p.Text, Timestamp: p.Timestamp,
 		}
 		if withImage {
 			if abs, err := absPath(p.ImagePath); err == nil {

@@ -23,31 +23,42 @@ type Post struct {
 }
 
 // IdeaSeed is what Claude returns per keepable post, and what lands in SQLite.
+// Field names mirror the idea bank's wire format so a row can be POSTed to the
+// Feed Runner backend without reshaping.
 type IdeaSeed struct {
-	ID             string    `json:"id"`
-	CreatedAt      time.Time `json:"created_at"`
-	Category       string    `json:"category"`
-	ThemeTags      []string  `json:"theme_tags"`
-	Tension        string    `json:"tension"`
-	AngleHint      string    `json:"angle_hint"`
-	ShelfLife      string    `json:"shelf_life"` // evergreen | weeks | days | hours
-	SourceType     string    `json:"source_type"`
-	SourceAuthor   string    `json:"source_author"`
-	SourcePostText string    `json:"source_post_text"`
-	SourcePostURL  string    `json:"source_post_url"`
-	SourcePostID   string    `json:"source_post_id"`
-	Visual         bool      `json:"visual"`
-	Status         string    `json:"status"`
+	ID               string    `json:"client_seed_id"` // "harvest-<post id>", the idempotency key
+	CreatedAt        time.Time `json:"-"`
+	CapturedAtMillis int64     `json:"captured_at_millis"` // post timestamp, filled by the engine
+	Source           string    `json:"source"`             // always "harvest" from this engine
+	Platform         string    `json:"platform"`           // always "x"
+	Category         string    `json:"category"`           // take|shitpost|banter|war_story|thought|trend
+	ThemeTags        []string  `json:"theme_tags"`         // category first, then 2-4 topic tags
+	Tension          string    `json:"tension"`
+	AngleHint        string    `json:"angle_hint"`
+	ShelfLife        string    `json:"shelf_life"` // evergreen | timely
+	PostAuthor       string    `json:"post_author"`
+	PostText         string    `json:"post_text"`
+	SourcePostURL    string    `json:"source_post_url"`
+	SourcePostID     string    `json:"source_post_id"`
+	Visual           bool      `json:"visual"`
+	Status           string    `json:"status"`
 }
 
-// SeedResponse is the shape Claude is told to emit: one object per kept post.
-// post_id ties it back to the Post it came from; everything else is the seed.
+// SeedResponse is the shape Claude is told to emit: one object per kept post,
+// already in the bank's wire format. ClientSeedID ties it back to the Post it
+// came from — it is "harvest-" plus the post id.
 type SeedResponse struct {
-	PostID    string   `json:"post_id"`
-	Category  string   `json:"category"`
-	ThemeTags []string `json:"theme_tags"`
-	Tension   string   `json:"tension"`
-	AngleHint string   `json:"angle_hint"`
-	ShelfLife string   `json:"shelf_life"`
-	Skip      bool     `json:"skip"` // an explicit "no substance here"; also just omit the post
+	ClientSeedID string   `json:"client_seed_id"`
+	Source       string   `json:"source"`
+	Platform     string   `json:"platform"`
+	PostAuthor   string   `json:"post_author"`
+	PostText     string   `json:"post_text"`
+	Category     string   `json:"category"`
+	ThemeTags    []string `json:"theme_tags"`
+	Tension      string   `json:"tension"`
+	AngleHint    string   `json:"angle_hint"`
+	ShelfLife    string   `json:"shelf_life"`
 }
+
+// SeedIDPrefix is prepended to a post id to form client_seed_id.
+const SeedIDPrefix = "harvest-"
