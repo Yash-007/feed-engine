@@ -44,7 +44,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (err error) {
 	var (
 		cfgPath   = flag.String("config", "config.yaml", "path to config.yaml")
 		stage     = flag.String("stage", "all", "all | scrape | seed | push")
@@ -76,6 +76,22 @@ func run() error {
 		return err
 	}
 	defer closer.Close()
+
+	/*
+		Put the fatal error in the log, not only on stderr.
+
+		main() prints it to stderr, which is fine when you are watching a
+		terminal and useless the rest of the time: under Task Scheduler nobody
+		reads stderr, so run.log ends with a cheerful "list done posts=0" and no
+		hint that the run actually failed. That happened on the first scheduled
+		run and cost a reproduction to diagnose. Errors raised before this point
+		predate the log file, so stderr is all they can have.
+	*/
+	defer func() {
+		if err != nil {
+			log.Error("run failed", "err", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

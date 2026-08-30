@@ -258,6 +258,39 @@ func (s *session) clickFirst(selector string) {
 	}
 }
 
+/*
+settleWithReload gives a slow first load a second chance.
+
+X does not always render the timeline inside the navigation timeout, and the
+first scheduled run on this laptop died exactly that way: 45 seconds of nothing,
+no posts, whole slot lost. Nothing was actually wrong — the same scrape worked
+minutes later. Unattended and three times a day, one reload is cheap insurance
+against losing a run to a bad thirty seconds.
+
+Once only. A second failure is a real condition (logged out, rate limited, an
+interstitial, genuine drift), and retrying a page that is deliberately not
+serving you is how a harvester turns into a hammer.
+*/
+func (s *session) settleWithReload(ctx context.Context, listURL string) error {
+	err := s.settle()
+	if err == nil {
+		return nil
+	}
+	s.log.Warn("timeline did not render, reloading once", "url", listURL, "err", err)
+	if !sleepCtx(ctx, 3*time.Second) {
+		return err
+	}
+	if _, rerr := s.page.Reload(playwright.PageReloadOptions{
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		Timeout:   playwright.Float(float64(s.cfg.Browser.NavTimeoutMS)),
+	}); rerr != nil {
+		// Report the original failure: the reload not working is a symptom of
+		// the same problem, and the first error is the one that describes it.
+		return err
+	}
+	return s.settle()
+}
+
 // settle waits for X's client-side render to produce either the timeline or the
 // sign-in form. Any login-state check made before this is looking at an empty
 // DOM and will answer "logged in" no matter what the truth is.
@@ -267,6 +300,45 @@ func (s *session) settle() error {
 		State:   playwright.WaitForSelectorStateAttached,
 		Timeout: playwright.Float(float64(s.cfg.Browser.NavTimeoutMS)),
 	})
+}
+
+/*
+The three probes behind the settle-failure message.
+
+Each is best effort and returns a placeholder rather than an error: they only
+ever run while something has already gone wrong, and a diagnostic that can
+itself fail is worse than no diagnostic. Everything is bounded, because the
+page they are describing is by definition one that would not finish loading.
+*/
+func (s *session) currentURL() string {
+	if u := s.page.URL(); u != "" {
+		return u
+	}
+	return "(unknown)"
+}
+
+func (s *session) pageTitle() string {
+	title, err := s.page.Title()
+	if err != nil {
+		return "(unreadable)"
+	}
+	return title
+}
+
+// pageSnippet is the first line or so of visible text, which is where a rate
+// limit notice or an interstitial announces itself.
+func (s *session) pageSnippet() string {
+	text, err := s.page.InnerText("body", playwright.PageInnerTextOptions{
+		Timeout: playwright.Float(3000),
+	})
+	if err != nil {
+		return "(no readable body)"
+	}
+	flat := strings.Join(strings.Fields(text), " ")
+	if len(flat) > 200 {
+		return flat[:200] + "..."
+	}
+	return flat
 }
 
 func (s *session) loggedOut() bool {
@@ -301,12 +373,19 @@ func Run(ctx context.Context, log *slog.Logger, cfg *config.Config, listURL stri
 	// comes back empty. Wait for whichever lands first, then decide. Checking
 	// login state too early is what makes a logged-out profile look like DOM
 	// drift 45 seconds later.
-	if err := s.settle(); err != nil {
+	if err := s.settleWithReload(ctx, listURL); err != nil {
 		if n, _ := s.page.Locator(selectors.S.EmptyState).Count(); n > 0 {
 			return res, fmt.Errorf("timeline rendered but is empty: %s", listURL)
 		}
-		return res, fmt.Errorf("neither posts nor a sign-in form appeared at %s — selector drift: %w",
-			listURL, err)
+		// "Selector drift" was the only explanation this offered, and it is the
+		// least likely one. Far more often X served something else entirely: a
+		// rate-limit notice, an age or interest interstitial, "something went
+		// wrong". Naming the page turns a guess into a diagnosis.
+		return res, fmt.Errorf(
+			"neither posts nor a sign-in form appeared at %s\n  landed on: %s\n  title: %q\n  page says: %q\n"+
+				"  (rate limiting or an interstitial is likelier than selector drift; "+
+				"open the profile with -login and look)\n  %w",
+			listURL, s.currentURL(), s.pageTitle(), s.pageSnippet(), err)
 	}
 
 	if s.loggedOut() {
